@@ -10,7 +10,6 @@
 #include "hardware/i2c.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "lib/DS18b20/ds18b20.h"
 #include "lib/Display_Bibliotecas/ssd1306.h"
 #include "lib/Matriz_Bibliotecas/matriz_led.h"
 #include "pico/cyw43_arch.h"
@@ -30,6 +29,7 @@
 #define PIN_RGB_G     12    //LED RGB (verde)
 #define PIN_RGB_B     13    //LED RGB (azul)
 #define PIN_BUZZER    10    //Buzzer
+#define PIN_SERVO     16    //Servo motor
 #define I2C_SDA       14    //I2C SDA (OLED)
 #define I2C_SCL       15    //I2C SCL (OLED)
 
@@ -59,6 +59,7 @@ void Task_Control(void *pv);      //Controle PI e PWM do LED RGB
 void Task_Buzzer(void *pv);       //Controla o buzzer
 void Task_Display(void *pv);      //Gerencia OLED e matriz de LEDs
 void Task_Webserver(void *pv);    //Servidor web
+void Task_Servo(void *pv);        //Controla o servo motor
 static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err); //Aceita conexões TCP (usado por Task_Webserver)
 static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err); //Processa requisições HTTP (usado por Task_Webserver)
 static err_t webserver_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len); //Fecha conexão após envio (usado por Task_Webserver)
@@ -202,7 +203,6 @@ void Task_Buzzer(void *pv) {
 }
 
 //Gerencia exibição no OLED e matriz de LEDs
-//Gerencia exibição no OLED e matriz de LEDs
 void Task_Display(void *pv) {
     char buf[32]; //Buffer para strings
     uint32_t ultimo_alternar = to_ms_since_boot(get_absolute_time()); //Alternância de telas
@@ -285,6 +285,24 @@ void Task_Display(void *pv) {
 
         ssd1306_send_data(&oled); //Atualiza display
         vTaskDelay(pdMS_TO_TICKS(100)); //Espera 100ms
+    }
+}
+
+//Task para controlar o servo motor
+void Task_Servo(void *pv) {
+    uint slice_servo = pwm_gpio_to_slice_num(PIN_SERVO);
+    uint chan_servo = pwm_gpio_to_channel(PIN_SERVO);
+
+    while (true) {
+        // Gira o servo motor rapidamente
+        for (int i = 1000; i <= 2000; i += 10) {
+            pwm_set_chan_level(slice_servo, chan_servo, i);
+            vTaskDelay(pdMS_TO_TICKS(10)); // Pequeno atraso para simular movimento rápido
+        }
+        for (int i = 2000; i >= 1000; i -= 10) {
+            pwm_set_chan_level(slice_servo, chan_servo, i);
+            vTaskDelay(pdMS_TO_TICKS(10)); // Pequeno atraso para simular movimento rápido
+        }
     }
 }
 
@@ -412,6 +430,13 @@ int main() {
     pwm_set_wrap(slice_r, 65535); pwm_set_wrap(slice_g, 65535); pwm_set_wrap(slice_b, 65535);
     pwm_set_enabled(slice_r, true); pwm_set_enabled(slice_g, true); pwm_set_enabled(slice_b, true);
 
+    //Inicializa PWM para o servo motor
+    gpio_set_function(PIN_SERVO, GPIO_FUNC_PWM);
+    uint slice_servo = pwm_gpio_to_slice_num(PIN_SERVO);
+    pwm_set_wrap(slice_servo, 9999); // Período de 20ms (50Hz)
+    pwm_set_chan_level(slice_servo, pwm_gpio_to_channel(PIN_SERVO), 1500); // Posição inicial (1.5ms)
+    pwm_set_enabled(slice_servo, true);
+
     //Cria tasks do FreeRTOS
     xTaskCreate(Task_Sensor, "Sensor", 256, NULL, 3, NULL); //Prioridade alta para sensor
     xTaskCreate(Task_Input, "Input", 512, NULL, 2, NULL);
@@ -419,6 +444,7 @@ int main() {
     xTaskCreate(Task_Display, "Display", 512, NULL, 1, NULL);
     xTaskCreate(Task_Buzzer, "Buzzer", 256, NULL, 1, NULL);
     xTaskCreate(Task_Webserver, "WebSrv", 1024, NULL, 1, NULL);
+    xTaskCreate(Task_Servo, "Servo", 256, NULL, 1, NULL);
 
     vTaskStartScheduler(); //Inicia o escalonador do FreeRTOS
     while (true) tight_loop_contents();
