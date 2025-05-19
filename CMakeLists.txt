@@ -62,7 +62,7 @@ add_executable(wifi_project
     main.c
     lib/Display_Bibliotecas/ssd1306.c
     lib/Matriz_Bibliotecas/matriz_led.c
-    lib/DS18b20/ds18b20.c
+    lib/dht11/dht11.c
 )
 
 #Vincula as bibliotecas necessárias ao executável
