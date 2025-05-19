@@ -45,7 +45,7 @@ set(FREERTOS_KERNEL_PATH "C:/Users/Jonas/FreeRTOS-Kernel")
 include(${FREERTOS_KERNEL_PATH}/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kernel_import.cmake)
 
 #Define o nome do projeto
-project(wifi_project C CXX ASM)
+project(wifi_project_parte_dois C CXX ASM)
 
 #Inicializa o SDK do Pico
 pico_sdk_init()
@@ -58,7 +58,7 @@ include_directories(
 )
 
 #Cria o executável com os arquivos fonte
-add_executable(wifi_project
+add_executable(wifi_project_parte_dois
     main.c
     lib/Display_Bibliotecas/ssd1306.c
     lib/Matriz_Bibliotecas/matriz_led.c
@@ -66,7 +66,7 @@ add_executable(wifi_project
 )
 
 #Vincula as bibliotecas necessárias ao executável
-target_link_libraries(wifi_project
+target_link_libraries(wifi_project_parte_dois
     pico_stdlib              #Biblioteca padrão do Pico
     hardware_i2c             #Driver I2C do Pico SDK
     hardware_pwm             #Driver PWM do Pico SDK
@@ -78,8 +78,8 @@ target_link_libraries(wifi_project
 )
 
 #Habilita saída padrão via USB e UART
-pico_enable_stdio_usb(wifi_project 1)
-pico_enable_stdio_uart(wifi_project 1)
+pico_enable_stdio_usb(wifi_project_parte_dois 1)
+pico_enable_stdio_uart(wifi_project_parte_dois 1)
 
 #Gera arquivos adicionais (binário, UF2, etc.)
-pico_add_extra_outputs(wifi_project)
+pico_add_extra_outputs(wifi_project_parte_dois)
