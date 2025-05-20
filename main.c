@@ -10,7 +10,7 @@
 #include "hardware/i2c.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "lib/dht11/dht11.h"                       // Biblioteca do DHT11
+#include "lib/dht11/dht11.h"
 #include "lib/Display_Bibliotecas/ssd1306.h"
 #include "lib/Matriz_Bibliotecas/matriz_led.h"
 #include "pico/cyw43_arch.h"
@@ -43,14 +43,15 @@
 
 // ----------------- VARIÁVEIS GLOBAIS -----------------
 static ssd1306_t oled;
-static float temperatura_atual;           // Temperatura lida pelo DHT11
-static int setpoint = 20;                 // Temperatura desejada (°C)
-static volatile uint16_t duty_cycle_pwm = 0;
-static float rpm_simulado = RPM_MIN;
-static bool selecionando = true;
-static bool exibir_tela_principal = true;
-static uint slice_r, slice_g, slice_b;
-static uint chan_r, chan_g, chan_b;
+static float    temperatura_atual;          // Temperatura lida pelo DHT11
+static int      setpoint = 20;              // Temperatura desejada (°C)
+static volatile uint16_t duty_cycle_pwm = 0; // PWM real do sistema
+static float    rpm_simulado = RPM_MIN;     // RPM simulado
+static bool     selecionando = true;
+static bool     exibir_tela_principal = true;
+static bool     medindo = false;            // Flag iniciada pelo botão OK via web
+static uint     slice_r, slice_g, slice_b;
+static uint     chan_r, chan_g, chan_b;
 
 // ----------------- PROTÓTIPOS -----------------
 void     Task_Sensor(void *pv);
@@ -70,7 +71,7 @@ void Task_Sensor(void *pv) {
     gpio_init(DHT11_PIN);
     while (true) {
         float h = 0.0f, t = 0.0f;
-        if (dht11_read(DHT11_PIN, &h, &t) == 0) {
+        if (medindo && dht11_read(DHT11_PIN, &h, &t) == 0) {
             temperatura_atual = t;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -270,72 +271,90 @@ void Task_Display(void *pv) {
 
 // ============================================================================
 // Webserver callbacks
+// <sent> fecha a conexão após enviar
 // ============================================================================
 static err_t webserver_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len) {
     tcp_close(tpcb);
     return ERR_OK;
 }
 
+// ============================================================================
+// Recebe requisições HTTP e monta página com:
+//   • Botão OK
+//   • Botões +1/–1
+//   • Setpoint
+//   • Temperatura medida
+//   • PWM real (%)
+//   • PWM simulado (LED) (%)
+//   • RPM simulado (Min 300 Max 2000)
+//   • Erro
+// ============================================================================
 static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
     if (!p) {
         tcp_close(tpcb);
         return ERR_OK;
     }
 
-    // Copia requisição em string
     char *req = malloc(p->len + 1);
     memcpy(req, p->payload, p->len);
     req[p->len] = '\0';
     pbuf_free(p);
 
-    // Ajusta setpoint conforme a URL
-    if      (strncmp(req, "GET /increase", 13) == 0 && setpoint < 30) setpoint++;
+    if      (strncmp(req, "GET /ok",       7) == 0) medindo = true;
+    else if (strncmp(req, "GET /increase", 13) == 0 && setpoint < 30) setpoint++;
     else if (strncmp(req, "GET /decrease", 13) == 0 && setpoint > 10) setpoint--;
     free(req);
 
-    // Monta HTML com botões +1 e –1
+    float erro       = temperatura_atual - (float)setpoint;
+    uint16_t realPct = (duty_cycle_pwm * 100) / 65535;
+    uint16_t ledPct  = realPct;
+    float   rpm      = rpm_simulado;
+
     static char body[1024];
     int body_len = snprintf(body, sizeof(body),
         "<!DOCTYPE html>\n"
-        "<html>\n"
-        "<head>\n"
-        "  <meta charset=\"UTF-8\">\n"
-        "  <title>Controle de Setpoint</title>\n"
+        "<html><head><meta charset=\"UTF-8\">\n"
+        "  <title>Monitor Pico W</title>\n"
         "  <style>\n"
-        "    body { background-color: #b5e5fb; font-family: Arial, sans-serif;\n"
-        "           text-align: center; margin-top: 50px; }\n"
-        "    h1 { font-size: 48px; margin-bottom: 30px; }\n"
-        "    button { background-color: LightGray; font-size: 36px;\n"
-        "             margin: 10px; padding: 20px 40px; border-radius: 10px; }\n"
-        "    .info { font-size: 32px; margin-top: 30px; color: #333; }\n"
+        "    body { background:#b5e5fb; font-family:Arial; text-align:center; margin-top:50px; }\n"
+        "    h1 { font-size:48px; }\n"
+        "    button { background:LightGray; font-size:24px; margin:5px; padding:10px 20px; border-radius:8px; }\n"
+        "    .info { font-size:28px; margin:12px 0; color:#333; }\n"
         "  </style>\n"
-        "</head>\n"
-        "<body>\n"
-        "  <h1>Monitor Pico W</h1>\n"
+        "</head><body>\n"
+        "  <h1>Controle de Medição</h1>\n"
+        "  <form action=\"/ok\"><button>OK</button></form>\n"
         "  <form action=\"/increase\"><button>+1 °C</button></form>\n"
         "  <form action=\"/decrease\"><button>–1 °C</button></form>\n"
-        "  <p class=\"info\">Temperatura Atual: %.1f °C</p>\n"
         "  <p class=\"info\">Setpoint: %d °C</p>\n"
-        "</body>\n"
-        "</html>\n",
-        temperatura_atual, setpoint);
+        "  <p class=\"info\">Temperatura: %.1f °C</p>\n"
+        "  <p class=\"info\">PWM Real: %u %%</p>\n"
+        "  <p class=\"info\">PWM SIMULADO (LED): %u %%</p>\n"
+        "  <p class=\"info\">RPM Simulado (Min 300 Max 2000): %.0f</p>\n"
+        "  <p class=\"info\">Erro: %.1f °C</p>\n"
+        "</body></html>\n",
+        setpoint, temperatura_atual, realPct, ledPct, rpm, erro
+    );
 
-    // Cabeçalho HTTP
     char header[128];
-    int header_len = snprintf(header, sizeof(header),
+    int  header_len = snprintf(header, sizeof(header),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html\r\n"
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n",
-        body_len);
+        body_len
+    );
 
-    tcp_write(tpcb, header, header_len, TCP_WRITE_FLAG_COPY);
-    tcp_write(tpcb, body,   body_len,   TCP_WRITE_FLAG_COPY);
+    tcp_write(tpcb, header,    header_len, TCP_WRITE_FLAG_COPY);
+    tcp_write(tpcb, body,      body_len,   TCP_WRITE_FLAG_COPY);
     tcp_output(tpcb);
     tcp_sent(tpcb, webserver_sent);
     return ERR_OK;
 }
 
+// ============================================================================
+// Aceita nova conexão TCP
+// ============================================================================
 static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
     tcp_recv(newpcb, webserver_recv);
     return ERR_OK;
@@ -365,7 +384,7 @@ void Task_Webserver(void *pv) {
 
     struct tcp_pcb *srv = tcp_new();
     if (!srv || tcp_bind(srv, IP_ADDR_ANY, 80) != ERR_OK) {
-        printf("Erro bind porta 80\n");
+        printf("Erro no bind porta 80\n");
         vTaskDelete(NULL);
     }
     srv = tcp_listen(srv);
