@@ -26,9 +26,7 @@
 #define DHT11_PIN     16    // Sensor DHT11 (GPIO 16)
 #define PIN_VRY       26    // Joystick vertical (ADC0)
 #define PIN_BTN_A     5     // Botão A
-#define PIN_RGB_R     11    // LED RGB (vermelho)
-#define PIN_RGB_G     12    // LED RGB (verde)
-#define PIN_RGB_B     13    // LED RGB (azul)
+#define PIN_RGB_B     12    // LED RGB (azul)
 #define PIN_BUZZER    10    // Buzzer
 #define I2C_SDA       14    // I2C SDA (OLED)
 #define I2C_SCL       15    // I2C SCL (OLED)
@@ -43,15 +41,16 @@
 
 // ----------------- VARIÁVEIS GLOBAIS -----------------
 static ssd1306_t oled;
-static float temperatura_atual;           // Temperatura lida pelo DHT11
+static float temperatura_atual = 0.0f;    // Temperatura lida pelo DHT11
 static float umidade_atual = 0.0f;        // Umidade lida pelo DHT11
 static int setpoint = 20;                 // Temperatura desejada (°C)
 static volatile uint16_t duty_cycle_pwm = 0;
 static float rpm_simulado = RPM_MIN;
 static bool selecionando = true;
 static bool exibir_tela_principal = true;
-static uint slice_r, slice_g, slice_b;
-static uint chan_r, chan_g, chan_b;
+static uint slice_b;
+static uint chan_b;
+static bool sistema_ativo = false;        // Controla se o sistema está ativo
 
 // ----------------- PROTÓTIPOS -----------------
 void     Task_Sensor(void *pv);
@@ -70,10 +69,12 @@ static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
 void Task_Sensor(void *pv) {
     gpio_init(DHT11_PIN);
     while (true) {
-        float h = 0.0f, t = 0.0f;
-        if (dht11_read(DHT11_PIN, &h, &t) == 0) {
-            temperatura_atual = t;
-            umidade_atual = h; // Armazena a umidade lida
+        if (sistema_ativo) {
+            float h = 0.0f, t = 0.0f;
+            if (dht11_read(DHT11_PIN, &h, &t) == 0) {
+                temperatura_atual = t;
+                umidade_atual = h;
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -98,12 +99,18 @@ void Task_Input(void *pv) {
         bool     estado_btn_atual = (gpio_get(PIN_BTN_A) == 0);
         int      direcao         = (valor_raw > 3000 ? 1 : (valor_raw < 1000 ? -1 : 0));
 
-        if (selecionando) {
+        if (selecionando && !sistema_ativo) {
             if (direcao ==  1 && ultima_direcao == 0 && setpoint < 30) setpoint++;
             if (direcao == -1 && ultima_direcao == 0 && setpoint > 10) setpoint--;
-            if (estado_btn_atual && !ultimo_estado_btn) selecionando = false;
+            if (estado_btn_atual && !ultimo_estado_btn) {
+                selecionando = false;
+                sistema_ativo = true; // Ativa o sistema ao pressionar A
+            }
         } else {
-            if (estado_btn_atual && !ultimo_estado_btn) selecionando = true;
+            if (estado_btn_atual && !ultimo_estado_btn) {
+                selecionando = true;
+                sistema_ativo = false; // Desativa o sistema ao pressionar A novamente
+            }
         }
 
         ultimo_estado_btn = estado_btn_atual;
@@ -113,7 +120,7 @@ void Task_Input(void *pv) {
 }
 
 // ============================================================================
-// Task: Controle PI e PWM do LED RGB
+// Task: Controle PI e PWM do LED Azul
 // ============================================================================
 void Task_Control(void *pv) {
     const float kp = 120.0f;
@@ -121,31 +128,33 @@ void Task_Control(void *pv) {
     const float h  = 1.0f;
     static float integral = 0.0f;
 
+    // Inicializa com valores zero
+    duty_cycle_pwm = 0;
+    pwm_set_chan_level(slice_b, chan_b, 0);
+
     while (true) {
-        float erro = temperatura_atual - (float)setpoint;
-        float P    = kp * erro;
-        integral  += ki * erro * h;
-        integral   = fmaxf(fminf(integral, 4096.0f), -4096.0f);
+        if (sistema_ativo) {
+            float erro = temperatura_atual - (float)setpoint;
+            float P    = kp * erro;
+            integral  += ki * erro * h;
+            integral   = fmaxf(fminf(integral, 4096.0f), -4096.0f);
 
-        float U = P + integral;
-        int32_t duty = (int32_t)((U + 4096.0f) * (65535.0f / 8192.0f));
-        duty = duty < 0 ? 0 : (duty > 65535 ? 65535 : duty);
-        duty_cycle_pwm = duty;
+            float U = P + integral;
+            int32_t duty = (int32_t)((U + 4096.0f) * (65535.0f / 8192.0f));
+            duty = duty < 0 ? 0 : (duty > 65535 ? 65535 : duty);
+            duty_cycle_pwm = duty;
 
-        rpm_simulado = RPM_MIN + (RPM_MAX - RPM_MIN) * (duty_cycle_pwm / 65535.0f);
+            rpm_simulado = RPM_MIN + (RPM_MAX - RPM_MIN) * (duty_cycle_pwm / 65535.0f);
 
-        float erro_abs = fabsf(erro);
-        uint16_t r = 0, g = 0, b = 0;
-        if (!selecionando) {
-            if (erro_abs > 9.6f)       r = duty_cycle_pwm;
-            else if (erro_abs >= 3.6f) r = duty_cycle_pwm, g = duty_cycle_pwm;
-            else                       g = duty_cycle_pwm;
+            uint16_t b = duty_cycle_pwm;
+            pwm_set_chan_level(slice_b, chan_b, b);
+        } else {
+            // Reset integrator and duty cycle when system is inactive
+            integral = 0.0f;
+            duty_cycle_pwm = 0;
+            pwm_set_chan_level(slice_b, chan_b, 0);
+            rpm_simulado = RPM_MIN;
         }
-
-        pwm_set_chan_level(slice_r, chan_r, r);
-        pwm_set_chan_level(slice_g, chan_g, g);
-        pwm_set_chan_level(slice_b, chan_b, b);
-
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -160,36 +169,36 @@ void Task_Buzzer(void *pv) {
     pwm_set_enabled(slice, true);
 
     while (true) {
-        float erro = fabsf(temperatura_atual - (float)setpoint);
-        if (selecionando) {
-            pwm_set_enabled(slice, false);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-        if (erro > 9.6f) {
-            pwm_set_clkdiv(slice, 125.0f / 1000.0f);
-            pwm_set_wrap(slice, 1000);
-            pwm_set_chan_level(slice, chan, 500);
-            pwm_set_enabled(slice, true);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            pwm_set_enabled(slice, false);
-            vTaskDelay(pdMS_TO_TICKS(100));
-        } else if (erro >= 3.6f) {
-            pwm_set_clkdiv(slice, 125.0f / 500.0f);
-            pwm_set_wrap(slice, 1000);
-            pwm_set_chan_level(slice, chan, 500);
-            pwm_set_enabled(slice, true);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            pwm_set_enabled(slice, false);
-            vTaskDelay(pdMS_TO_TICKS(600));
+        if (sistema_ativo && !selecionando) {
+            float erro = fabsf(temperatura_atual - (float)setpoint);
+            if (erro > 9.6f) {
+                pwm_set_clkdiv(slice, 125.0f / 1000.0f);
+                pwm_set_wrap(slice, 1000);
+                pwm_set_chan_level(slice, chan, 500);
+                pwm_set_enabled(slice, true);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                pwm_set_enabled(slice, false);
+                vTaskDelay(pdMS_TO_TICKS(100));
+            } else if (erro >= 3.6f) {
+                pwm_set_clkdiv(slice, 125.0f / 500.0f);
+                pwm_set_wrap(slice, 1000);
+                pwm_set_chan_level(slice, chan, 500);
+                pwm_set_enabled(slice, true);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                pwm_set_enabled(slice, false);
+                vTaskDelay(pdMS_TO_TICKS(600));
+            } else {
+                pwm_set_clkdiv(slice, 125.0f / 200.0f);
+                pwm_set_wrap(slice, 1000);
+                pwm_set_chan_level(slice, chan, 500);
+                pwm_set_enabled(slice, true);
+                vTaskDelay(pdMS_TO_TICKS(300));
+                pwm_set_enabled(slice, false);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
         } else {
-            pwm_set_clkdiv(slice, 125.0f / 200.0f);
-            pwm_set_wrap(slice, 1000);
-            pwm_set_chan_level(slice, chan, 500);
-            pwm_set_enabled(slice, true);
-            vTaskDelay(pdMS_TO_TICKS(300));
             pwm_set_enabled(slice, false);
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
@@ -203,19 +212,21 @@ void Task_Display(void *pv) {
 
     while (true) {
         uint32_t agora = to_ms_since_boot(get_absolute_time());
-        if (!selecionando && agora - ultimo_alternar > 5000) {
+        if (sistema_ativo && !selecionando && agora - ultimo_alternar > 5000) {
             exibir_tela_principal = !exibir_tela_principal;
             ultimo_alternar = agora;
         }
 
         ssd1306_fill(&oled, false);
 
-        if (selecionando) {
+        if (selecionando || !sistema_ativo) {
             ssd1306_draw_string(&oled, "Ajuste Setpoint:", 0, 0, false);
             snprintf(buf, sizeof(buf), "   %2d C", setpoint);
             ssd1306_draw_string(&oled, buf, 0, 16, false);
             ssd1306_draw_string(&oled, "[A] Confirma", 0, 32, false);
-
+            
+            // Limpa a matriz de LEDs quando o sistema está inativo
+           
         } else if (exibir_tela_principal) {
             snprintf(buf, sizeof(buf), "Temp: %4.1f C", temperatura_atual);
             ssd1306_draw_string(&oled, buf, 0, 0, false);
@@ -249,7 +260,6 @@ void Task_Display(void *pv) {
             } else {
                 matriz_draw_number(digito, cor);
             }
-
         } else {
             snprintf(buf, sizeof(buf), "RPM: %4.0f", rpm_simulado);
             ssd1306_draw_string(&oled, buf, 0, 0, false);
@@ -290,26 +300,38 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
     req[p->len] = '\0';
     pbuf_free(p);
 
-    // Ajusta setpoint conforme a URL
-    if      (strncmp(req, "GET /increase", 13) == 0 && setpoint < 30) setpoint++;
-    else if (strncmp(req, "GET /decrease", 13) == 0 && setpoint > 10) setpoint--;
-    else if (strncmp(req, "GET /ok", 7) == 0) {
-        selecionando = false; // Simula o pressionar do botão A para iniciar medição
+    // Ajusta setpoint apenas se o sistema não estiver ativo
+    if (strncmp(req, "GET /increase", 13) == 0 && !sistema_ativo && setpoint < 30) {
+        setpoint++;
+    } else if (strncmp(req, "GET /decrease", 13) == 0 && !sistema_ativo && setpoint > 10) {
+        setpoint--;
+    } else if (strncmp(req, "GET /ok", 7) == 0 && !sistema_ativo) {
+        selecionando = false;
+        sistema_ativo = true; // Ativa o sistema ao clicar em "OK"
+    } else if (strncmp(req, "GET /stop", 9) == 0 && sistema_ativo) {
+        selecionando = true;
+        sistema_ativo = false; // Desativa o sistema ao clicar em "STOP"
     }
     free(req);
 
     // Calcula valores para exibir
     float pwm_led_percent = (duty_cycle_pwm / 65535.0f) * 100.0f;
     float erro_temp = (float)setpoint - temperatura_atual;
+    float rpm_display_web = rpm_simulado;
 
-    // Monta HTML
-    static char body[1536]; // Aumentado para acomodar mais informações
+    // Lógica para exibir 0 RPM quando no mínimo
+    if (fabsf(rpm_simulado - RPM_MIN) < 0.01f) {
+        rpm_display_web = 0.0f;
+    }
+
+    // Monta HTML com informações sobre o estado do sistema
+    static char body[2048];
     int body_len = snprintf(body, sizeof(body),
         "<!DOCTYPE html>\n"
         "<html>\n"
         "<head>\n"
         "  <meta charset=\"UTF-8\">\n"
-        "  <meta http-equiv=\"refresh\" content=\"5\">\n" // Auto-refresh a cada 5 segundos
+        "  <meta http-equiv=\"refresh\" content=\"2\">\n"
         "  <title>Controle de Setpoint</title>\n"
         "  <style>\n"
         "    body { background-color: #b5e5fb; font-family: Arial, sans-serif;\n"
@@ -319,13 +341,30 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
         "             margin: 5px; padding: 10px 20px; border-radius: 8px; }\n"
         "    .info { font-size: 20px; margin-top: 10px; color: #333; }\n"
         "    .info-container { display: inline-block; text-align: left; }\n"
+        "    .status { font-weight: bold; margin: 15px; font-size: 24px; }\n"
+        "    .active { color: green; }\n"
+        "    .inactive { color: red; }\n"
         "  </style>\n"
         "</head>\n"
         "<body>\n"
         "  <h1>Monitor Pico W</h1>\n"
-        "  <form action=\"/increase\" method=\"get\"><button type=\"submit\">+1 °C</button></form>\n"
-        "  <form action=\"/decrease\" method=\"get\"><button type=\"submit\">–1 °C</button></form>\n"
-        "  <form action=\"/ok\" method=\"get\"><button type=\"submit\">OK (Iniciar)</button></form>\n"
+        "  <div class=\"status %s\">Sistema: %s</div>\n",
+        sistema_ativo ? "active" : "inactive",
+        sistema_ativo ? "ATIVO" : "INATIVO");
+
+    // Conteúdo do formulário baseado no estado do sistema
+    if (!sistema_ativo) {
+        body_len += snprintf(body + body_len, sizeof(body) - body_len,
+            "  <form action=\"/increase\" method=\"get\"><button type=\"submit\">+1 °C</button></form>\n"
+            "  <form action=\"/decrease\" method=\"get\"><button type=\"submit\">–1 °C</button></form>\n"
+            "  <form action=\"/ok\" method=\"get\"><button type=\"submit\" style=\"background-color: #90EE90;\">OK (Iniciar)</button></form>\n");
+    } else {
+        body_len += snprintf(body + body_len, sizeof(body) - body_len,
+            "  <form action=\"/stop\" method=\"get\"><button type=\"submit\" style=\"background-color: #FFCCCB;\">STOP (Parar)</button></form>\n");
+    }
+
+    // Restante do HTML
+    body_len += snprintf(body + body_len, sizeof(body) - body_len,
         "  <div class=\"info-container\">\n"
         "    <p class=\"info\">Setpoint: %d °C</p>\n"
         "    <p class=\"info\">Temperatura Medida: %.1f °C</p>\n"
@@ -333,11 +372,11 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
         "    <p class=\"info\">Erro Atual: %.1f °C</p>\n"
         "    <p class=\"info\">PWM Real: %u / 65535</p>\n"
         "    <p class=\"info\">PWM LED Simulado: %.1f %%</p>\n"
-        "    <p class=\"info\">RPM Motor Simulado: %.0f RPM</p>\n"
+        "    <p class=\"info\">RPM Motor Simulado (Min 300 Max 2000): %.0f RPM</p>\n"
         "  </div>\n"
         "</body>\n"
         "</html>\n",
-        setpoint, temperatura_atual, umidade_atual, erro_temp, duty_cycle_pwm, pwm_led_percent, rpm_simulado);
+        setpoint, temperatura_atual, umidade_atual, erro_temp, duty_cycle_pwm, pwm_led_percent, rpm_display_web);
 
     // Cabeçalho HTTP
     char header[128];
@@ -404,6 +443,10 @@ int main() {
     stdio_init_all();
     inicializar_matriz_led();
 
+    // Inicializa sistema_ativo como falso
+    sistema_ativo = false;
+    selecionando = true;
+
     // I2C e OLED
     i2c_init(OLED_I2C_PORT, 400000);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
@@ -413,27 +456,22 @@ int main() {
     ssd1306_init(&oled, 128, 64, false, OLED_ADDR, OLED_I2C_PORT);
     ssd1306_config(&oled);
 
-    // PWM RGB
-    gpio_set_function(PIN_RGB_R, GPIO_FUNC_PWM);
-    gpio_set_function(PIN_RGB_G, GPIO_FUNC_PWM);
+    // PWM Azul
     gpio_set_function(PIN_RGB_B, GPIO_FUNC_PWM);
-    slice_r = pwm_gpio_to_slice_num(PIN_RGB_R); chan_r = pwm_gpio_to_channel(PIN_RGB_R);
-    slice_g = pwm_gpio_to_slice_num(PIN_RGB_G); chan_g = pwm_gpio_to_channel(PIN_RGB_G);
     slice_b = pwm_gpio_to_slice_num(PIN_RGB_B); chan_b = pwm_gpio_to_channel(PIN_RGB_B);
-    pwm_set_wrap(slice_r, 65535);
-    pwm_set_wrap(slice_g, 65535);
     pwm_set_wrap(slice_b, 65535);
-    pwm_set_enabled(slice_r, true);
-    pwm_set_enabled(slice_g, true);
+    pwm_set_chan_level(slice_b, chan_b, 0); // Inicializa com valor zero
     pwm_set_enabled(slice_b, true);
 
+    
+    
     // Criação das Tasks
     xTaskCreate(Task_Sensor,    "Sensor",  256, NULL, 3, NULL);
     xTaskCreate(Task_Input,     "Input",   512, NULL, 2, NULL);
     xTaskCreate(Task_Control,   "Control", 512, NULL, 2, NULL);
     xTaskCreate(Task_Display,   "Display", 512, NULL, 1, NULL);
     xTaskCreate(Task_Buzzer,    "Buzzer",  256, NULL, 1, NULL);
-    xTaskCreate(Task_Webserver, "WebSrv", 1024, NULL, 1, NULL); // Aumentado stack para webserver com HTML maior
+    xTaskCreate(Task_Webserver, "WebSrv", 1280, NULL, 1, NULL);
 
     vTaskStartScheduler();
     while (true) tight_loop_contents();
