@@ -6,7 +6,7 @@
 
 int main() {
     stdio_init_all();       // inicializa UART/USB serial
-    sleep_ms(2000);         // espera Porta Serial subir
+    sleep_ms(1000);         // espera Porta Serial subir
 
     gpio_init(DHT11_PIN);
     while (1) {
