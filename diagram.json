@@ -163,14 +163,7 @@
       "left": -171,
       "attrs": { "volume": "0.1" }
     },
-    { "type": "board-ds18b20", "id": "temp1", "top": 85.27, "left": 474.48, "attrs": {} },
-    {
-      "type": "wokwi-resistor",
-      "id": "r4",
-      "top": 186.35,
-      "left": 489.6,
-      "attrs": { "value": "4700" }
-    }
+    { "type": "wokwi-dht22", "id": "dht2", "top": -9.3, "left": 522.6, "attrs": {} }
   ],
   "connections": [
     [ "pico:GP0", "$serialMonitor:RX", "", [] ],
@@ -272,11 +265,9 @@
     [ "joystick1:HORZ", "pico:GP27", "green", [ "v0" ] ],
     [ "bz1:1", "pico:GND.1", "black", [ "v28.8", "h134.4", "v-163.2" ] ],
     [ "bz1:2", "pico:GP10", "limegreen", [ "v9.6", "h105.2", "v-76.8", "h115.2", "v19.2" ] ],
-    [ "temp1:GND", "pico:GND.5", "black", [ "v9.6", "h-240", "v0" ] ],
-    [ "temp1:DQ", "r4:1", "green", [ "v0" ] ],
-    [ "temp1:VCC", "r4:2", "red", [ "v28.8", "h76.8", "v28.8", "h-19.2" ] ],
-    [ "r4:1", "pico:GP20", "green", [ "v19.2", "h-86.4", "v-86.4" ] ],
-    [ "r4:2", "pico:3V3", "red", [ "v28.8", "h46.8", "v-172.8" ] ]
+    [ "dht2:VCC", "pico:3V3", "red", [ "v19.2", "h-19.2", "v-96" ] ],
+    [ "dht2:GND", "pico:GND.6", "black", [ "v48", "h-115.2", "v-28.8" ] ],
+    [ "dht2:SDA", "pico:GP16", "#8f4814", [ "v38.4", "h-297.5", "v38.4" ] ]
   ],
   "dependencies": {}
 }

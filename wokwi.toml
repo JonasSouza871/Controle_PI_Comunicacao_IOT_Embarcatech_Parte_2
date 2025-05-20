@@ -1,4 +1,4 @@
 [wokwi]
 version = 1
-firmware = 'build/wifi_project.uf2'
-elf = 'build/wifi_project.elf'
+firmware = 'build/wifi_project_parte_dois.uf2'
+elf = 'build/wifi_project_parte_dois.elf'
