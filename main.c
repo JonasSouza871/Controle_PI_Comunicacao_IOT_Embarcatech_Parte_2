@@ -44,6 +44,7 @@
 // ----------------- VARIÁVEIS GLOBAIS -----------------
 static ssd1306_t oled;
 static float temperatura_atual;           // Temperatura lida pelo DHT11
+static float umidade_atual = 0.0f;        // Umidade lida pelo DHT11
 static int setpoint = 20;                 // Temperatura desejada (°C)
 static volatile uint16_t duty_cycle_pwm = 0;
 static float rpm_simulado = RPM_MIN;
@@ -72,6 +73,7 @@ void Task_Sensor(void *pv) {
         float h = 0.0f, t = 0.0f;
         if (dht11_read(DHT11_PIN, &h, &t) == 0) {
             temperatura_atual = t;
+            umidade_atual = h; // Armazena a umidade lida
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -327,14 +329,15 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
         "  <div class=\"info-container\">\n"
         "    <p class=\"info\">Setpoint: %d °C</p>\n"
         "    <p class=\"info\">Temperatura Medida: %.1f °C</p>\n"
+        "    <p class=\"info\">Umidade Medida: %.1f %%</p>\n"
+        "    <p class=\"info\">Erro Atual: %.1f °C</p>\n"
         "    <p class=\"info\">PWM Real: %u / 65535</p>\n"
         "    <p class=\"info\">PWM LED Simulado: %.1f %%</p>\n"
         "    <p class=\"info\">RPM Motor Simulado: %.0f RPM</p>\n"
-        "    <p class=\"info\">Erro Atual: %.1f °C</p>\n"
         "  </div>\n"
         "</body>\n"
         "</html>\n",
-        setpoint, temperatura_atual, duty_cycle_pwm, pwm_led_percent, rpm_simulado, erro_temp);
+        setpoint, temperatura_atual, umidade_atual, erro_temp, duty_cycle_pwm, pwm_led_percent, rpm_simulado);
 
     // Cabeçalho HTTP
     char header[128];
