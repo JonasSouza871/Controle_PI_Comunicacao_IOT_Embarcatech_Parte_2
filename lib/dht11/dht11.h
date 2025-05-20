@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
-int dht11_read(uint8_t dataPin, uint8_t* humidityPercent, uint8_t* temperatureCelsius);
+// Atualiza a assinatura da função para usar float em vez de uint8_t
+int dht11_read(uint8_t dataPin, float* humidityPercent, float* temperatureCelsius);
 
 #endif // DHT11_H

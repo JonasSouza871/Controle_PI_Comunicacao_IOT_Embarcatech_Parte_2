@@ -87,7 +87,7 @@ static int verifyChecksum(const uint8_t* data) {
 }
 
 // Lê temperatura e umidade do sensor DHT11
-int dht11_read(uint8_t dataPin, uint8_t* humidityPercent, uint8_t* temperatureCelsius) {
+int dht11_read(uint8_t dataPin, float* humidityPercent, float* temperatureCelsius) {
     uint8_t data[DATA_BYTES] = {0};
 
     //Inicia comunicação com o sensor
@@ -110,8 +110,8 @@ int dht11_read(uint8_t dataPin, uint8_t* humidityPercent, uint8_t* temperatureCe
         return ERROR_CHECKSUM;
     }
 
-    //Atribui valores de umidade e temperatura
-    *humidityPercent = data[0];
-    *temperatureCelsius = data[2];
+    //Atribui valores de umidade e temperatura com uma casa decimal simulada
+    *humidityPercent = data[0] + (data[1] / 10.0);
+    *temperatureCelsius = data[2] + (data[3] / 10.0);
     return 0;
 }
