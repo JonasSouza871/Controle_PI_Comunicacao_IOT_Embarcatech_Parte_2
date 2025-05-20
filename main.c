@@ -52,6 +52,13 @@ static uint slice_b;
 static uint chan_b;
 static bool sistema_ativo = false;        // Controla se o sistema está ativo
 
+// Variáveis para estatísticas de temperatura
+static float temp_min = 100.0f;  // Valor inicial alto para mínima
+static float temp_max = 0.0f;    // Valor inicial baixo para máxima
+static float temp_sum = 0.0f;    // Soma das temperaturas
+static int temp_count = 0;       // Contador de leituras
+static float temp_media = 0.0f;  // Média das temperaturas
+
 // ----------------- PROTÓTIPOS -----------------
 void     Task_Sensor(void *pv);
 void     Task_Input(void *pv);
@@ -74,6 +81,13 @@ void Task_Sensor(void *pv) {
             if (dht11_read(DHT11_PIN, &h, &t) == 0) {
                 temperatura_atual = t;
                 umidade_atual = h;
+                
+                // Atualizar estatísticas de temperatura
+                if (t < temp_min) temp_min = t;
+                if (t > temp_max) temp_max = t;
+                temp_sum += t;
+                temp_count++;
+                temp_media = temp_sum / temp_count;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -363,7 +377,7 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
             "  <form action=\"/stop\" method=\"get\"><button type=\"submit\" style=\"background-color: #FFCCCB;\">STOP (Parar)</button></form>\n");
     }
 
-    // Restante do HTML
+    // Restante do HTML com estatísticas de temperatura
     body_len += snprintf(body + body_len, sizeof(body) - body_len,
         "  <div class=\"info-container\">\n"
         "    <p class=\"info\">Setpoint: %d °C</p>\n"
@@ -373,10 +387,14 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
         "    <p class=\"info\">PWM Real: %u / 65535</p>\n"
         "    <p class=\"info\">PWM LED Simulado: %.1f %%</p>\n"
         "    <p class=\"info\">RPM Motor Simulado (Min 300 Max 2000): %.0f RPM</p>\n"
+        "    <p class=\"info\">Temperatura Mínima: %.1f °C</p>\n"
+        "    <p class=\"info\">Temperatura Máxima: %.1f °C</p>\n"
+        "    <p class=\"info\">Temperatura Média: %.1f °C</p>\n"
         "  </div>\n"
         "</body>\n"
         "</html>\n",
-        setpoint, temperatura_atual, umidade_atual, erro_temp, duty_cycle_pwm, pwm_led_percent, rpm_display_web);
+        setpoint, temperatura_atual, umidade_atual, erro_temp, duty_cycle_pwm, pwm_led_percent, rpm_display_web,
+        temp_min, temp_max, temp_media);
 
     // Cabeçalho HTTP
     char header[128];
@@ -463,8 +481,6 @@ int main() {
     pwm_set_chan_level(slice_b, chan_b, 0); // Inicializa com valor zero
     pwm_set_enabled(slice_b, true);
 
-    
-    
     // Criação das Tasks
     xTaskCreate(Task_Sensor,    "Sensor",  256, NULL, 3, NULL);
     xTaskCreate(Task_Input,     "Input",   512, NULL, 2, NULL);
