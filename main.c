@@ -10,7 +10,7 @@
 #include "hardware/i2c.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "lib/dht11/dht11.h"
+#include "lib/dht11/dht11.h"                       // Biblioteca do DHT11
 #include "lib/Display_Bibliotecas/ssd1306.h"
 #include "lib/Matriz_Bibliotecas/matriz_led.h"
 #include "pico/cyw43_arch.h"
@@ -43,15 +43,14 @@
 
 // ----------------- VARIÁVEIS GLOBAIS -----------------
 static ssd1306_t oled;
-static float    temperatura_atual;          // Temperatura lida pelo DHT11
-static int      setpoint = 20;              // Temperatura desejada (°C)
-static volatile uint16_t duty_cycle_pwm = 0; // PWM real do sistema
-static float    rpm_simulado = RPM_MIN;     // RPM simulado
-static bool     selecionando = true;
-static bool     exibir_tela_principal = true;
-static bool     medindo = false;            // Flag iniciada pelo botão OK via web
-static uint     slice_r, slice_g, slice_b;
-static uint     chan_r, chan_g, chan_b;
+static float temperatura_atual;           // Temperatura lida pelo DHT11
+static int setpoint = 20;                 // Temperatura desejada (°C)
+static volatile uint16_t duty_cycle_pwm = 0;
+static float rpm_simulado = RPM_MIN;
+static bool selecionando = true;
+static bool exibir_tela_principal = true;
+static uint slice_r, slice_g, slice_b;
+static uint chan_r, chan_g, chan_b;
 
 // ----------------- PROTÓTIPOS -----------------
 void     Task_Sensor(void *pv);
@@ -71,7 +70,7 @@ void Task_Sensor(void *pv) {
     gpio_init(DHT11_PIN);
     while (true) {
         float h = 0.0f, t = 0.0f;
-        if (medindo && dht11_read(DHT11_PIN, &h, &t) == 0) {
+        if (dht11_read(DHT11_PIN, &h, &t) == 0) {
             temperatura_atual = t;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -131,14 +130,14 @@ void Task_Control(void *pv) {
         duty = duty < 0 ? 0 : (duty > 65535 ? 65535 : duty);
         duty_cycle_pwm = duty;
 
-        rpm_simulado = RPM_MIN + (RPM_MAX - RPM_MIN) * (duty / 65535.0f);
+        rpm_simulado = RPM_MIN + (RPM_MAX - RPM_MIN) * (duty_cycle_pwm / 65535.0f);
 
         float erro_abs = fabsf(erro);
         uint16_t r = 0, g = 0, b = 0;
         if (!selecionando) {
-            if (erro_abs > 9.6f)       r = duty;
-            else if (erro_abs >= 3.6f) r = duty, g = duty;
-            else                       g = duty;
+            if (erro_abs > 9.6f)       r = duty_cycle_pwm;
+            else if (erro_abs >= 3.6f) r = duty_cycle_pwm, g = duty_cycle_pwm;
+            else                       g = duty_cycle_pwm;
         }
 
         pwm_set_chan_level(slice_r, chan_r, r);
@@ -220,12 +219,12 @@ void Task_Display(void *pv) {
             ssd1306_draw_string(&oled, buf, 0, 0, false);
             snprintf(buf, sizeof(buf), "Set:  %3d C", setpoint);
             ssd1306_draw_string(&oled, buf, 0, 16, false);
-            snprintf(buf, sizeof(buf), "Erro: %4.1f C", setpoint - temperatura_atual);
+            snprintf(buf, sizeof(buf), "Erro: %4.1f C", (float)setpoint - temperatura_atual);
             ssd1306_draw_string(&oled, buf, 0, 32, false);
             snprintf(buf, sizeof(buf), "PWM:  %5u", duty_cycle_pwm);
             ssd1306_draw_string(&oled, buf, 0, 48, false);
 
-            float erro = fabsf(setpoint - temperatura_atual);
+            float erro = fabsf((float)setpoint - temperatura_atual);
             int parte_int  = (int)floorf(erro);
             float parte_dec = erro - parte_int;
             int digito      = (parte_dec >= 0.6f) ? parte_int + 1 : parte_int;
@@ -271,90 +270,88 @@ void Task_Display(void *pv) {
 
 // ============================================================================
 // Webserver callbacks
-// <sent> fecha a conexão após enviar
 // ============================================================================
 static err_t webserver_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len) {
     tcp_close(tpcb);
     return ERR_OK;
 }
 
-// ============================================================================
-// Recebe requisições HTTP e monta página com:
-//   • Botão OK
-//   • Botões +1/–1
-//   • Setpoint
-//   • Temperatura medida
-//   • PWM real (%)
-//   • PWM simulado (LED) (%)
-//   • RPM simulado (Min 300 Max 2000)
-//   • Erro
-// ============================================================================
 static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
     if (!p) {
         tcp_close(tpcb);
         return ERR_OK;
     }
 
+    // Copia requisição em string
     char *req = malloc(p->len + 1);
     memcpy(req, p->payload, p->len);
     req[p->len] = '\0';
     pbuf_free(p);
 
-    if      (strncmp(req, "GET /ok",       7) == 0) medindo = true;
-    else if (strncmp(req, "GET /increase", 13) == 0 && setpoint < 30) setpoint++;
+    // Ajusta setpoint conforme a URL
+    if      (strncmp(req, "GET /increase", 13) == 0 && setpoint < 30) setpoint++;
     else if (strncmp(req, "GET /decrease", 13) == 0 && setpoint > 10) setpoint--;
+    else if (strncmp(req, "GET /ok", 7) == 0) {
+        selecionando = false; // Simula o pressionar do botão A para iniciar medição
+    }
     free(req);
 
-    float erro       = temperatura_atual - (float)setpoint;
-    uint16_t realPct = (duty_cycle_pwm * 100) / 65535;
-    uint16_t ledPct  = realPct;
-    float   rpm      = rpm_simulado;
+    // Calcula valores para exibir
+    float pwm_led_percent = (duty_cycle_pwm / 65535.0f) * 100.0f;
+    float erro_temp = (float)setpoint - temperatura_atual;
 
-    static char body[1024];
+    // Monta HTML
+    static char body[1536]; // Aumentado para acomodar mais informações
     int body_len = snprintf(body, sizeof(body),
         "<!DOCTYPE html>\n"
-        "<html><head><meta charset=\"UTF-8\">\n"
-        "  <title>Monitor Pico W</title>\n"
+        "<html>\n"
+        "<head>\n"
+        "  <meta charset=\"UTF-8\">\n"
+        "  <meta http-equiv=\"refresh\" content=\"5\">\n" // Auto-refresh a cada 5 segundos
+        "  <title>Controle de Setpoint</title>\n"
         "  <style>\n"
-        "    body { background:#b5e5fb; font-family:Arial; text-align:center; margin-top:50px; }\n"
-        "    h1 { font-size:48px; }\n"
-        "    button { background:LightGray; font-size:24px; margin:5px; padding:10px 20px; border-radius:8px; }\n"
-        "    .info { font-size:28px; margin:12px 0; color:#333; }\n"
+        "    body { background-color: #b5e5fb; font-family: Arial, sans-serif;\n"
+        "           text-align: center; margin-top: 20px; }\n"
+        "    h1 { font-size: 36px; margin-bottom: 20px; }\n"
+        "    button { background-color: LightGray; font-size: 24px;\n"
+        "             margin: 5px; padding: 10px 20px; border-radius: 8px; }\n"
+        "    .info { font-size: 20px; margin-top: 10px; color: #333; }\n"
+        "    .info-container { display: inline-block; text-align: left; }\n"
         "  </style>\n"
-        "</head><body>\n"
-        "  <h1>Controle de Medição</h1>\n"
-        "  <form action=\"/ok\"><button>OK</button></form>\n"
-        "  <form action=\"/increase\"><button>+1 °C</button></form>\n"
-        "  <form action=\"/decrease\"><button>–1 °C</button></form>\n"
-        "  <p class=\"info\">Setpoint: %d °C</p>\n"
-        "  <p class=\"info\">Temperatura: %.1f °C</p>\n"
-        "  <p class=\"info\">PWM Real: %u %%</p>\n"
-        "  <p class=\"info\">PWM SIMULADO (LED): %u %%</p>\n"
-        "  <p class=\"info\">RPM Simulado (Min 300 Max 2000): %.0f</p>\n"
-        "  <p class=\"info\">Erro: %.1f °C</p>\n"
-        "</body></html>\n",
-        setpoint, temperatura_atual, realPct, ledPct, rpm, erro
-    );
+        "</head>\n"
+        "<body>\n"
+        "  <h1>Monitor Pico W</h1>\n"
+        "  <form action=\"/increase\" method=\"get\"><button type=\"submit\">+1 °C</button></form>\n"
+        "  <form action=\"/decrease\" method=\"get\"><button type=\"submit\">–1 °C</button></form>\n"
+        "  <form action=\"/ok\" method=\"get\"><button type=\"submit\">OK (Iniciar)</button></form>\n"
+        "  <div class=\"info-container\">\n"
+        "    <p class=\"info\">Setpoint: %d °C</p>\n"
+        "    <p class=\"info\">Temperatura Medida: %.1f °C</p>\n"
+        "    <p class=\"info\">PWM Real: %u / 65535</p>\n"
+        "    <p class=\"info\">PWM LED Simulado: %.1f %%</p>\n"
+        "    <p class=\"info\">RPM Motor Simulado: %.0f RPM</p>\n"
+        "    <p class=\"info\">Erro Atual: %.1f °C</p>\n"
+        "  </div>\n"
+        "</body>\n"
+        "</html>\n",
+        setpoint, temperatura_atual, duty_cycle_pwm, pwm_led_percent, rpm_simulado, erro_temp);
 
+    // Cabeçalho HTTP
     char header[128];
-    int  header_len = snprintf(header, sizeof(header),
+    int header_len = snprintf(header, sizeof(header),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html\r\n"
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n",
-        body_len
-    );
+        body_len);
 
-    tcp_write(tpcb, header,    header_len, TCP_WRITE_FLAG_COPY);
-    tcp_write(tpcb, body,      body_len,   TCP_WRITE_FLAG_COPY);
+    tcp_write(tpcb, header, header_len, TCP_WRITE_FLAG_COPY);
+    tcp_write(tpcb, body,   body_len,   TCP_WRITE_FLAG_COPY);
     tcp_output(tpcb);
     tcp_sent(tpcb, webserver_sent);
     return ERR_OK;
 }
 
-// ============================================================================
-// Aceita nova conexão TCP
-// ============================================================================
 static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
     tcp_recv(newpcb, webserver_recv);
     return ERR_OK;
@@ -384,7 +381,7 @@ void Task_Webserver(void *pv) {
 
     struct tcp_pcb *srv = tcp_new();
     if (!srv || tcp_bind(srv, IP_ADDR_ANY, 80) != ERR_OK) {
-        printf("Erro no bind porta 80\n");
+        printf("Erro bind porta 80\n");
         vTaskDelete(NULL);
     }
     srv = tcp_listen(srv);
@@ -433,7 +430,7 @@ int main() {
     xTaskCreate(Task_Control,   "Control", 512, NULL, 2, NULL);
     xTaskCreate(Task_Display,   "Display", 512, NULL, 1, NULL);
     xTaskCreate(Task_Buzzer,    "Buzzer",  256, NULL, 1, NULL);
-    xTaskCreate(Task_Webserver, "WebSrv", 1024, NULL, 1, NULL);
+    xTaskCreate(Task_Webserver, "WebSrv", 1024, NULL, 1, NULL); // Aumentado stack para webserver com HTML maior
 
     vTaskStartScheduler();
     while (true) tight_loop_contents();
