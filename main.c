@@ -10,330 +10,395 @@
 #include "hardware/i2c.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "lib/dht11/dht11.h"                       // Biblioteca do DHT11
-#include "lib/Display_Bibliotecas/ssd1306.h"
-#include "lib/Matriz_Bibliotecas/matriz_led.h"
+#include "lib/dht11/dht11.h" //Biblioteca para o sensor de temperatura e umidade DHT11
+#include "lib/Display_Bibliotecas/ssd1306.h" //Biblioteca para o display OLED SSD1306
+#include "lib/Matriz_Bibliotecas/matriz_led.h" //Biblioteca para a matriz de LEDs
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
 #include "lwip/pbuf.h"
 #include "lwip/netif.h"
 
-// ----------------- CONFIGURAÇÃO WI-FI -----------------
-#define WIFI_SSID     "Jonas Souza"
-#define WIFI_PASSWORD "12345678"
+//=== CONFIGURAÇÕES DO SISTEMA ===
+//Configurações de Wi-Fi
+#define WIFI_NOME_REDE "Jonas Souza"
+#define WIFI_SENHA     "12345678"
 
-// ----------------- PINOS -----------------
-#define DHT11_PIN     16    // Sensor DHT11 (GPIO 16)
-#define PIN_VRY       26    // Joystick vertical (ADC0)
-#define PIN_BTN_A     5     // Botão A
-#define PIN_RGB_B     12    // LED RGB (azul)
-#define PIN_BUZZER    10    // Buzzer
-#define I2C_SDA       14    // I2C SDA (OLED)
-#define I2C_SCL       15    // I2C SCL (OLED)
+//Pinos de hardware
+#define PINO_DHT11     16 //Pino do sensor DHT11 (temperatura e umidade)
+#define PINO_JOYSTICK_Y 26 //Pino do eixo Y do joystick (ADC0)
+#define PINO_BOTAO_A    5 //Pino do botão A
+#define PINO_LED_AZUL  12 //Pino do LED azul (PWM)
+#define PINO_BUZZER    10 //Pino do buzzer (PWM)
+#define PINO_I2C_SDA   14 //Pino SDA para I2C (OLED)
+#define PINO_I2C_SCL   15 //Pino SCL para I2C (OLED)
 
-// ----------------- CONFIGURAÇÃO OLED -----------------
-#define OLED_I2C_PORT i2c1
-#define OLED_ADDR     0x3C
+//Configurações do display OLED
+#define PORTA_I2C_OLED i2c1
+#define ENDERECO_OLED  0x3C
 
-// ----------------- VALORES DE RPM -----------------
-#define RPM_MIN 300.0f
-#define RPM_MAX 2000.0f
+//Parâmetros de controle
+#define RPM_MINIMO     300.0f //RPM mínimo do motor simulado
+#define RPM_MAXIMO     2000.0f //RPM máximo do motor simulado
+#define TAMANHO_HISTORICO 60 //Tamanho do buffer de histórico de temperaturas
 
-// ----------------- HISTÓRICO DE TEMPERATURAS -----------------
-#define TEMP_HISTORY_SIZE 60
-static float temp_history[TEMP_HISTORY_SIZE];
-static int temp_index = 0;
-static int temp_count = 0;
+//=== ESTRUTURAS E VARIÁVEIS GLOBAIS ===
+typedef struct {
+    ssd1306_t display; //Estrutura do display OLED
+    float temperaturas[TAMANHO_HISTORICO]; //Histórico de temperaturas
+    int indice_temperatura; //Índice atual no buffer circular
+    int contador_temperaturas; //Contador de temperaturas armazenadas
+    float temperatura_ambiente; //Temperatura atual lida do DHT11
+    float umidade_ambiente; //Umidade atual lida do DHT11
+    int setpoint_temperatura; //Temperatura desejada (setpoint)
+    uint16_t ciclo_pwm; //Ciclo de trabalho do PWM (0 a 65535)
+    float rpm_atual; //RPM simulado do motor
+    bool modo_selecao; //Indica se está ajustando o setpoint
+    bool tela_principal; //Indica se exibe a tela principal no OLED
+    bool sistema_ligado; //Indica se o sistema de controle está ativo
+    uint canal_pwm_led; //Canal PWM do LED azul
+    uint fatia_pwm_led; //Fatia PWM do LED azul
+} EstadoSistema;
 
-// ----------------- VARIÁVEIS GLOBAIS -----------------
-static ssd1306_t oled;
-static float temperatura_atual = 0.0f;    // Temperatura lida
-static float umidade_atual    = 0.0f;    // Umidade lida
-static int setpoint           = 20;      // °C
-static volatile uint16_t duty_cycle_pwm = 0;
-static float rpm_simulado     = RPM_MIN;
-static bool selecionando      = true;
-static bool exibir_tela_principal = true;
-static uint slice_b, chan_b;
-static bool sistema_ativo     = false;   // Se o controle está ativo
+//Variável global para o estado do sistema
+static EstadoSistema estado = {
+    .indice_temperatura = 0,
+    .contador_temperaturas = 0,
+    .temperatura_ambiente = 0.0f,
+    .umidade_ambiente = 0.0f,
+    .setpoint_temperatura = 20,
+    .ciclo_pwm = 0,
+    .rpm_atual = RPM_MINIMO,
+    .modo_selecao = true,
+    .tela_principal = true,
+    .sistema_ligado = false
+};
 
-// ----------------- PRÓTOTIPOS -----------------
-void Task_Sensor(void *pv);
-void Task_Input(void *pv);
-void Task_Control(void *pv);
-void Task_Buzzer(void *pv);
-void Task_Display(void *pv);
-void Task_Webserver(void *pv);
-static err_t webserver_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len);
-static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err);
-static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
+//=== FUNÇÕES AUXILIARES ===
+void inicializar_hardware(void) {
+    //Inicializa comunicação serial
+    stdio_init_all();
+    
+    //Inicializa matriz de LEDs
+    inicializar_matriz_led();
 
-// ============================================================================
-// Task: Leitura do DHT11 e histórico de temperaturas
-// ============================================================================
-void Task_Sensor(void *pv) {
-    gpio_init(DHT11_PIN);
-    while (true) {
-        if (sistema_ativo) {
-            float h = 0.0f, t = 0.0f;
-            if (dht11_read(DHT11_PIN, &h, &t) == 0) {
-                temperatura_atual = t;
-                umidade_atual     = h;
-                // armazena leitura no buffer circular
-                temp_history[temp_index] = t;
-                temp_index = (temp_index + 1) % TEMP_HISTORY_SIZE;
-                if (temp_count < TEMP_HISTORY_SIZE) temp_count++;
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000));
+    //Configura I2C para o display OLED
+    i2c_init(PORTA_I2C_OLED, 400000);
+    gpio_set_function(PINO_I2C_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(PINO_I2C_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(PINO_I2C_SDA);
+    gpio_pull_up(PINO_I2C_SCL);
+    
+    //Inicializa o display OLED
+    ssd1306_init(&estado.display, 128, 64, false, ENDERECO_OLED, PORTA_I2C_OLED);
+    ssd1306_config(&estado.display);
+
+    //Configura PWM para o LED azul
+    gpio_set_function(PINO_LED_AZUL, GPIO_FUNC_PWM);
+    estado.fatia_pwm_led = pwm_gpio_to_slice_num(PINO_LED_AZUL);
+    estado.canal_pwm_led = pwm_gpio_to_channel(PINO_LED_AZUL);
+    pwm_set_wrap(estado.fatia_pwm_led, 65535);
+    pwm_set_chan_level(estado.fatia_pwm_led, estado.canal_pwm_led, 0);
+    pwm_set_enabled(estado.fatia_pwm_led, true);
+}
+
+float calcular_media_temperaturas(void) {
+    //Calcula a média das temperaturas armazenadas no histórico
+    float soma = 0.0f;
+    for (int i = 0; i < estado.contador_temperaturas; i++) {
+        soma += estado.temperaturas[i];
+    }
+    return estado.contador_temperaturas ? (soma / estado.contador_temperaturas) : 0.0f;
+}
+
+void atualizar_tela_oled_selecao(void) {
+    //Exibe a tela de ajuste de setpoint no OLED
+    char texto[32];
+    ssd1306_fill(&estado.display, false);
+    ssd1306_draw_string(&estado.display, "Ajuste Setpoint:", 0, 0, false);
+    snprintf(texto, sizeof(texto), "   %2d °C", estado.setpoint_temperatura);
+    ssd1306_draw_string(&estado.display, texto, 0, 16, false);
+    ssd1306_draw_string(&estado.display, "[A] Confirma", 0, 32, false);
+    ssd1306_send_data(&estado.display);
+}
+
+void atualizar_tela_oled_principal(void) {
+    //Exibe informações principais (temperatura, setpoint, erro, PWM)
+    char texto[32];
+    ssd1306_fill(&estado.display, false);
+    snprintf(texto, sizeof(texto), "Temp: %4.1f °C", estado.temperatura_ambiente);
+    ssd1306_draw_string(&estado.display, texto, 0, 0, false);
+    snprintf(texto, sizeof(texto), "Set:  %3d °C", estado.setpoint_temperatura);
+    ssd1306_draw_string(&estado.display, texto, 0, 16, false);
+    snprintf(texto, sizeof(texto), "Erro: %4.1f °C", (float)estado.setpoint_temperatura - estado.temperatura_ambiente);
+    ssd1306_draw_string(&estado.display, texto, 0, 32, false);
+    snprintf(texto, sizeof(texto), "PWM:  %5u", estado.ciclo_pwm);
+    ssd1306_draw_string(&estado.display, texto, 0, 48, false);
+    ssd1306_send_data(&estado.display);
+
+    //Atualiza a matriz de LEDs com base no erro
+    float erro = fabsf((float)estado.setpoint_temperatura - estado.temperatura_ambiente);
+    int parte_inteira = (int)floorf(erro);
+    float parte_decimal = erro - parte_inteira;
+    int digito = (parte_decimal >= 0.6f) ? parte_inteira + 1 : parte_inteira;
+    uint32_t cor;
+
+    //Define a cor da matriz de LEDs com base no erro
+    switch (digito) {
+        case 0: cor = COR_BRANCO; break;
+        case 1: cor = COR_PRATA; break;
+        case 2: cor = COR_CINZA; break;
+        case 3: cor = COR_VIOLETA; break;
+        case 4: cor = COR_AZUL; break;
+        case 5: cor = COR_MARROM; break;
+        case 6: cor = COR_VERDE; break;
+        case 7: cor = COR_OURO; break;
+        case 8: cor = COR_LARANJA; break;
+        case 9: cor = COR_AMARELO; break;
+        default: cor = COR_OFF; break;
+    }
+    if (erro > 9.6f) {
+        matriz_draw_pattern(PAD_X, COR_VERMELHO);
+    } else {
+        matriz_draw_number(digito, cor);
     }
 }
 
-// ============================================================================
-// Task: Ajuste de setpoint via joystick e botão
-// ============================================================================
-void Task_Input(void *pv) {
+void atualizar_tela_oled_rpm(void) {
+    //Exibe informações de RPM e status no OLED
+    char texto[32];
+    ssd1306_fill(&estado.display, false);
+    snprintf(texto, sizeof(texto), "RPM: %4.0f", estado.rpm_atual);
+    ssd1306_draw_string(&estado.display, texto, 0, 0, false);
+
+    //Desenha uma barra proporcional ao RPM
+    float faixa = RPM_MAXIMO - RPM_MINIMO;
+    float posicao = (estado.rpm_atual - RPM_MINIMO) / faixa;
+    int comprimento = (int)(posicao * estado.display.width);
+    for (int i = 0; i < comprimento; i++) {
+        ssd1306_line(&estado.display, i, 20, i, 25, true);
+    }
+
+    snprintf(texto, sizeof(texto), "Min:%4.0f Max:%4.0f", RPM_MINIMO, RPM_MAXIMO);
+    ssd1306_draw_string(&estado.display, texto, 0, 32, false);
+    const char *mensagem = (estado.temperatura_ambiente > estado.setpoint_temperatura) ? "ESFRIAR!!" : "ESQUENTAR!!";
+    ssd1306_draw_string(&estado.display, mensagem, 0, 50, false);
+    ssd1306_send_data(&estado.display);
+}
+
+//=== taskS DO FreeRTOS ===
+void task_leitura_sensor(void *parametros) {
+    //Configura o pino do sensor DHT11
+    gpio_init(PINO_DHT11);
+    
+    while (true) {
+        if (estado.sistema_ligado) {
+            float umidade, temperatura;
+            //Lê temperatura e umidade do sensor DHT11
+            if (dht11_read(PINO_DHT11, &umidade, &temperatura) == 0) {
+                estado.temperatura_ambiente = temperatura;
+                estado.umidade_ambiente = umidade;
+                //Armazena a temperatura no buffer circular
+                estado.temperaturas[estado.indice_temperatura] = temperatura;
+                estado.indice_temperatura = (estado.indice_temperatura + 1) % TAMANHO_HISTORICO;
+                if (estado.contador_temperaturas < TAMANHO_HISTORICO) {
+                    estado.contador_temperaturas++;
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000)); //Aguarda 1 segundo
+    }
+}
+
+void task_entrada_usuario(void *parametros) {
+    //Inicializa ADC para o joystick e configura o botão
     adc_init();
-    adc_gpio_init(PIN_VRY);
+    adc_gpio_init(PINO_JOYSTICK_Y);
     adc_select_input(0);
-    gpio_init(PIN_BTN_A);
-    gpio_set_dir(PIN_BTN_A, GPIO_IN);
-    gpio_pull_up(PIN_BTN_A);
+    gpio_init(PINO_BOTAO_A);
+    gpio_set_dir(PINO_BOTAO_A, GPIO_IN);
+    gpio_pull_up(PINO_BOTAO_A);
 
-    bool ultimo_btn = false;
-    int ultima_dir  = 0;
+    bool botao_anterior = false;
+    int direcao_anterior = 0;
 
     while (true) {
-        uint16_t raw = adc_read();
-        bool btn = (gpio_get(PIN_BTN_A) == 0);
-        int dir = (raw > 3000 ? 1 : (raw < 1000 ? -1 : 0));
+        //Lê o valor do joystick (eixo Y) e o estado do botão
+        uint16_t valor_adc = adc_read();
+        bool botao_atual = (gpio_get(PINO_BOTAO_A) == 0);
+        int direcao = (valor_adc > 3000 ? 1 : (valor_adc < 1000 ? -1 : 0));
 
-        if (selecionando && !sistema_ativo) {
-            if (dir ==  1 && ultima_dir == 0 && setpoint < 30) setpoint++;
-            if (dir == -1 && ultima_dir == 0 && setpoint > 10) setpoint--;
-            if (btn && !ultimo_btn) {
-                selecionando  = false;
-                sistema_ativo = true;
+        //Ajusta o setpoint apenas no modo de seleção e com sistema desligado
+        if (estado.modo_selecao && !estado.sistema_ligado) {
+            if (direcao == 1 && direcao_anterior == 0 && estado.setpoint_temperatura < 30) {
+                estado.setpoint_temperatura++;
             }
-        } else {
-            if (btn && !ultimo_btn) {
-                selecionando  = true;
-                sistema_ativo = false;
+            if (direcao == -1 && direcao_anterior == 0 && estado.setpoint_temperatura > 10) {
+                estado.setpoint_temperatura--;
             }
+            if (botao_atual && !botao_anterior) {
+                estado.modo_selecao = false;
+                estado.sistema_ligado = true;
+            }
+        } else if (botao_atual && !botao_anterior) {
+            estado.modo_selecao = true;
+            estado.sistema_ligado = false;
         }
 
-        ultimo_btn = btn;
-        ultima_dir = dir;
-        vTaskDelay(pdMS_TO_TICKS(100));
+        botao_anterior = botao_atual;
+        direcao_anterior = direcao;
+        vTaskDelay(pdMS_TO_TICKS(100)); //Aguarda 100ms para debounce
     }
 }
 
-// ============================================================================
-// Task: Controle PI e PWM (LED azul) + simula RPM
-// ============================================================================
-void Task_Control(void *pv) {
-    const float kp = 120.0f;
-    const float ki = 120.0f / 15.0f;
-    const float h  = 1.0f;
-    static float integral = 0.0f;
+void task_controle_pi(void *parametros) {
+    //Parâmetros do controlador PI
+    const float kp = 120.0f; //Ganho proporcional
+    const float ki = 120.0f / 15.0f; //Ganho integral
+    const float intervalo = 1.0f; //Intervalo de amostragem (1s)
+    float integral = 0.0f;
 
-    pwm_set_chan_level(slice_b, chan_b, 0);
+    pwm_set_chan_level(estado.fatia_pwm_led, estado.canal_pwm_led, 0);
 
     while (true) {
-        if (sistema_ativo) {
-            float erro = temperatura_atual - (float)setpoint;
-            float P    = kp * erro;
-            integral  += ki * erro * h;
-            integral   = fmaxf(fminf(integral, 4096.0f), -4096.0f);
+        if (estado.sistema_ligado) {
+            //Calcula o erro entre a temperatura desejada e a atual
+            float erro = estado.temperatura_ambiente - (float)estado.setpoint_temperatura;
+            float termo_proporcional = kp * erro;
+            integral += ki * erro * intervalo;
+            integral = fmaxf(fminf(integral, 4096.0f), -4096.0f); //Limita o termo integral
 
-            float U = P + integral;
-            int32_t duty = (int32_t)((U + 4096.0f) * (65535.0f / 8192.0f));
-            duty = duty < 0 ? 0 : (duty > 65535 ? 65535 : duty);
-            duty_cycle_pwm = duty;
+            //Calcula o sinal de controle e converte para ciclo de trabalho PWM
+            float sinal_controle = termo_proporcional + integral;
+            int32_t ciclo = (int32_t)((sinal_controle + 4096.0f) * (65535.0f / 8192.0f));
+            ciclo = ciclo < 0 ? 0 : (ciclo > 65535 ? 65535 : ciclo);
+            estado.ciclo_pwm = ciclo;
 
-            rpm_simulado = RPM_MIN + (RPM_MAX - RPM_MIN) * (duty_cycle_pwm / 65535.0f);
-            pwm_set_chan_level(slice_b, chan_b, duty_cycle_pwm);
+            //Atualiza o RPM simulado com base no ciclo PWM
+            estado.rpm_atual = RPM_MINIMO + (RPM_MAXIMO - RPM_MINIMO) * (estado.ciclo_pwm / 65535.0f);
+            pwm_set_chan_level(estado.fatia_pwm_led, estado.canal_pwm_led, estado.ciclo_pwm);
         } else {
+            //Reseta o controlador e desliga o PWM quando o sistema está desligado
             integral = 0.0f;
-            duty_cycle_pwm = 0;
-            pwm_set_chan_level(slice_b, chan_b, 0);
-            rpm_simulado = RPM_MIN;
+            estado.ciclo_pwm = 0;
+            estado.rpm_atual = RPM_MINIMO;
+            pwm_set_chan_level(estado.fatia_pwm_led, estado.canal_pwm_led, 0);
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(1000)); //Aguarda 1 segundo
     }
 }
 
-// ============================================================================
-// Task: Buzzer de alerta conforme erro de temperatura
-// ============================================================================
-void Task_Buzzer(void *pv) {
-    gpio_set_function(PIN_BUZZER, GPIO_FUNC_PWM);
-    uint slice = pwm_gpio_to_slice_num(PIN_BUZZER);
-    uint chan  = pwm_gpio_to_channel(PIN_BUZZER);
-    pwm_set_enabled(slice, true);
+void task_buzzer_alerta(void *parametros) {
+    //Configura o buzzer como saída PWM
+    gpio_set_function(PINO_BUZZER, GPIO_FUNC_PWM);
+    uint fatia_pwm = pwm_gpio_to_slice_num(PINO_BUZZER);
+    uint canal_pwm = pwm_gpio_to_channel(PINO_BUZZER);
+    pwm_set_enabled(fatia_pwm, true);
 
     while (true) {
-        if (sistema_ativo && !selecionando) {
-            float erro = fabsf(temperatura_atual - (float)setpoint);
+        if (estado.sistema_ligado && !estado.modo_selecao) {
+            //Calcula o erro absoluto da temperatura
+            float erro = fabsf(estado.temperatura_ambiente - (float)estado.setpoint_temperatura);
             if (erro > 9.6f) {
-                pwm_set_clkdiv(slice, 125.0f / 1000.0f);
-                pwm_set_wrap(slice, 1000);
-                pwm_set_chan_level(slice, chan, 500);
-                pwm_set_enabled(slice, true);
+                //Alarme rápido para erro crítico
+                pwm_set_clkdiv(fatia_pwm, 125.0f / 1000.0f);
+                pwm_set_wrap(fatia_pwm, 1000);
+                pwm_set_chan_level(fatia_pwm, canal_pwm, 500);
+                pwm_set_enabled(fatia_pwm, true);
                 vTaskDelay(pdMS_TO_TICKS(100));
-                pwm_set_enabled(slice, false);
+                pwm_set_enabled(fatia_pwm, false);
                 vTaskDelay(pdMS_TO_TICKS(100));
             } else if (erro >= 3.6f) {
-                pwm_set_clkdiv(slice, 125.0f / 500.0f);
-                pwm_set_wrap(slice, 1000);
-                pwm_set_chan_level(slice, chan, 500);
-                pwm_set_enabled(slice, true);
+                //Alarme moderado para erro médio
+                pwm_set_clkdiv(fatia_pwm, 125.0f / 500.0f);
+                pwm_set_wrap(fatia_pwm, 1000);
+                pwm_set_chan_level(fatia_pwm, canal_pwm, 500);
+                pwm_set_enabled(fatia_pwm, true);
                 vTaskDelay(pdMS_TO_TICKS(200));
-                pwm_set_enabled(slice, false);
+                pwm_set_enabled(fatia_pwm, false);
                 vTaskDelay(pdMS_TO_TICKS(600));
             } else {
-                pwm_set_clkdiv(slice, 125.0f / 200.0f);
-                pwm_set_wrap(slice, 1000);
-                pwm_set_chan_level(slice, chan, 500);
-                pwm_set_enabled(slice, true);
+                //Alarme lento para erro baixo
+                pwm_set_clkdiv(fatia_pwm, 125.0f / 200.0f);
+                pwm_set_wrap(fatia_pwm, 1000);
+                pwm_set_chan_level(fatia_pwm, canal_pwm, 500);
+                pwm_set_enabled(fatia_pwm, true);
                 vTaskDelay(pdMS_TO_TICKS(300));
-                pwm_set_enabled(slice, false);
+                pwm_set_enabled(fatia_pwm, false);
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
         } else {
-            pwm_set_enabled(slice, false);
+            pwm_set_enabled(fatia_pwm, false);
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
 
-// ============================================================================
-// Task: Atualiza OLED e matriz de LEDs
-// ============================================================================
-void Task_Display(void *pv) {
-    char buf[32];
-    uint32_t last = to_ms_since_boot(get_absolute_time());
+void task_atualizar_display(void *parametros) {
+    uint32_t ultima_troca = to_ms_since_boot(get_absolute_time());
 
     while (true) {
-        uint32_t now = to_ms_since_boot(get_absolute_time());
-        if (sistema_ativo && !selecionando && now - last > 5000) {
-            exibir_tela_principal = !exibir_tela_principal;
-            last = now;
+        //Alterna entre telas a cada 5 segundos quando o sistema está ligado
+        uint32_t agora = to_ms_since_boot(get_absolute_time());
+        if (estado.sistema_ligado && !estado.modo_selecao && agora - ultima_troca > 5000) {
+            estado.tela_principal = !estado.tela_principal;
+            ultima_troca = agora;
         }
 
-        ssd1306_fill(&oled, false);
-
-        if (selecionando || !sistema_ativo) {
-            ssd1306_draw_string(&oled, "Ajuste Setpoint:", 0, 0, false);
-            snprintf(buf, sizeof(buf), "   %2d C", setpoint);
-            ssd1306_draw_string(&oled, buf, 0, 16, false);
-            ssd1306_draw_string(&oled, "[A] Confirma", 0, 32, false);
-        } else if (exibir_tela_principal) {
-            snprintf(buf, sizeof(buf), "Temp: %4.1f C", temperatura_atual);
-            ssd1306_draw_string(&oled, buf, 0, 0, false);
-            snprintf(buf, sizeof(buf), "Set:  %3d C", setpoint);
-            ssd1306_draw_string(&oled, buf, 0, 16, false);
-            snprintf(buf, sizeof(buf), "Erro: %4.1f C", (float)setpoint - temperatura_atual);
-            ssd1306_draw_string(&oled, buf, 0, 32, false);
-            snprintf(buf, sizeof(buf), "PWM:  %5u", duty_cycle_pwm);
-            ssd1306_draw_string(&oled, buf, 0, 48, false);
-
-            float erro = fabsf((float)setpoint - temperatura_atual);
-            int parte_i  = (int)floorf(erro);
-            float parte_d = erro - parte_i;
-            int dig       = (parte_d >= 0.6f) ? parte_i + 1 : parte_i;
-            uint32_t cor;
-            switch (dig) {
-                case 0: cor = COR_BRANCO;  break;
-                case 1: cor = COR_PRATA;   break;
-                case 2: cor = COR_CINZA;   break;
-                case 3: cor = COR_VIOLETA; break;
-                case 4: cor = COR_AZUL;    break;
-                case 5: cor = COR_MARROM;  break;
-                case 6: cor = COR_VERDE;   break;
-                case 7: cor = COR_OURO;    break;
-                case 8: cor = COR_LARANJA; break;
-                case 9: cor = COR_AMARELO; break;
-                default: cor = COR_OFF;    break;
-            }
-            if (erro > 9.6f) {
-                matriz_draw_pattern(PAD_X, COR_VERMELHO);
-            } else {
-                matriz_draw_number(dig, cor);
-            }
+        //Exibe a tela apropriada com base no estado do sistema
+        if (estado.modo_selecao || !estado.sistema_ligado) {
+            atualizar_tela_oled_selecao();
+        } else if (estado.tela_principal) {
+            atualizar_tela_oled_principal();
         } else {
-            snprintf(buf, sizeof(buf), "RPM: %4.0f", rpm_simulado);
-            ssd1306_draw_string(&oled, buf, 0, 0, false);
-            float range = RPM_MAX - RPM_MIN;
-            float pos   = (rpm_simulado - RPM_MIN) / range;
-            int len     = (int)(pos * oled.width);
-            for (int i = 0; i < len; i++) {
-                ssd1306_line(&oled, i, 20, i, 25, true);
-            }
-            snprintf(buf, sizeof(buf), "Min:%4.0f Max:%4.0f", RPM_MIN, RPM_MAX);
-            ssd1306_draw_string(&oled, buf, 0, 32, false);
-            const char *act = (temperatura_atual > setpoint) ? "ESFRIAR!!" : "ESQUENTAR!!";
-            ssd1306_draw_string(&oled, act, 0, 50, false);
+            atualizar_tela_oled_rpm();
         }
 
-        ssd1306_send_data(&oled);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(100)); //Aguarda 100ms
     }
 }
 
-// ============================================================================
-// Callbacks do webserver
-// ============================================================================
-static err_t webserver_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len) {
+static err_t callback_envio_web(void *arg, struct tcp_pcb *tpcb, uint16_t len) {
+    //Fecha a conexão TCP após o envio dos dados
     tcp_close(tpcb);
     return ERR_OK;
 }
 
-static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
+static err_t callback_recepcao_web(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
     if (!p) {
         tcp_close(tpcb);
         return ERR_OK;
     }
 
-    // copia requisição
-    char *req = malloc(p->len + 1);
-    memcpy(req, p->payload, p->len);
-    req[p->len] = '\0';
+    //Copia a requisição recebida
+    char *requisicao = malloc(p->len + 1);
+    memcpy(requisicao, p->payload, p->len);
+    requisicao[p->len] = '\0';
     pbuf_free(p);
 
-    // trata endpoints
-    if (strncmp(req, "GET /increase", 13) == 0 && !sistema_ativo && setpoint < 30) {
-        setpoint++;
-    } else if (strncmp(req, "GET /decrease", 13) == 0 && !sistema_ativo && setpoint > 10) {
-        setpoint--;
-    } else if (strncmp(req, "GET /ok", 7) == 0 && !sistema_ativo) {
-        selecionando  = false;
-        sistema_ativo = true;
-    } else if (strncmp(req, "GET /stop", 9) == 0 && sistema_ativo) {
-        selecionando  = true;
-        sistema_ativo = false;
+    //Processa os endpoints da requisição
+    if (strncmp(requisicao, "GET /increase", 13) == 0 && !estado.sistema_ligado && estado.setpoint_temperatura < 30) {
+        estado.setpoint_temperatura++;
+    } else if (strncmp(requisicao, "GET /decrease", 13) == 0 && !estado.sistema_ligado && estado.setpoint_temperatura > 10) {
+        estado.setpoint_temperatura--;
+    } else if (strncmp(requisicao, "GET /ok", 7) == 0 && !estado.sistema_ligado) {
+        estado.modo_selecao = false;
+        estado.sistema_ligado = true;
+    } else if (strncmp(requisicao, "GET /stop", 9) == 0 && estado.sistema_ligado) {
+        estado.modo_selecao = true;
+        estado.sistema_ligado = false;
     }
-    free(req);
+    free(requisicao);
 
-    // calcula valores
-    float pwm_led_percent = (duty_cycle_pwm / 65535.0f) * 100.0f;
-    float erro_temp       = (float)setpoint - temperatura_atual;
-    float rpm_display_web = rpm_simulado;
-    if (fabsf(rpm_simulado - RPM_MIN) < 0.01f) {
-        rpm_display_web = 0.0f;
-    }
+    //Calcula valores para exibição
+    float percentual_pwm = (estado.ciclo_pwm / 65535.0f) * 100.0f;
+    float erro_temperatura = (float)estado.setpoint_temperatura - estado.temperatura_ambiente;
+    float rpm_exibicao = estado.rpm_atual == RPM_MINIMO ? 0.0f : estado.rpm_atual;
+    float angulo_servo = (estado.ciclo_pwm / 65535.0f) * 180.0f;
+    float media_temperaturas = calcular_media_temperaturas();
 
-    // ângulo do servo simulado
-    float servo_angle = (duty_cycle_pwm / 65535.0f) * 180.0f;
-
-    // média das últimas leituras
-    float sum = 0.0f;
-    for (int i = 0; i < temp_count; i++) sum += temp_history[i];
-    float temp_media = temp_count ? (sum / temp_count) : 0.0f;
-
-    // monta HTML com refresh a cada 2s
-    static char body[2048];
-    int body_len = snprintf(body, sizeof(body),
+    //Monta a página HTML com atualização automática a cada 2 segundos
+    char corpo[2048];
+    int tamanho_corpo = snprintf(corpo, sizeof(corpo),
         "<!DOCTYPE html>\n"
         "<html>\n"
         "<head>\n"
@@ -354,25 +419,25 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
         "<body>\n"
         "  <h1>ThermoGuardian</h1>\n"
         "  <div class=\"status %s\">Sistema: %s</div>\n",
-        sistema_ativo ? "active" : "inactive",
-        sistema_ativo ? "ATIVO" : "INATIVO"
+        estado.sistema_ligado ? "active" : "inactive",
+        estado.sistema_ligado ? "ATIVO" : "INATIVO"
     );
 
-    // formulários de controle
-    if (!sistema_ativo) {
-        body_len += snprintf(body + body_len, sizeof(body) - body_len,
+    //Adiciona botões de controle se o sistema está desligado
+    if (!estado.sistema_ligado) {
+        tamanho_corpo += snprintf(corpo + tamanho_corpo, sizeof(corpo) - tamanho_corpo,
             "  <form action=\"/increase\" method=\"get\"><button type=\"submit\">+1 °C</button></form>\n"
             "  <form action=\"/decrease\" method=\"get\"><button type=\"submit\">–1 °C</button></form>\n"
             "  <form action=\"/ok\" method=\"get\"><button type=\"submit\" style=\"background-color: #90EE90;\">OK</button></form>\n"
         );
     } else {
-        body_len += snprintf(body + body_len, sizeof(body) - body_len,
+        tamanho_corpo += snprintf(corpo + tamanho_corpo, sizeof(corpo) - tamanho_corpo,
             "  <form action=\"/stop\" method=\"get\"><button type=\"submit\" style=\"background-color: #FFCCCB;\">STOP</button></form>\n"
         );
     }
 
-    // container de informações
-    body_len += snprintf(body + body_len, sizeof(body) - body_len,
+    //Adiciona informações do sistema
+    tamanho_corpo += snprintf(corpo + tamanho_corpo, sizeof(corpo) - tamanho_corpo,
         "  <div class=\"info-container\">\n"
         "    <p class=\"info\">Setpoint: %d °C</p>\n"
         "    <p class=\"info\">Temperatura Medida: %.1f °C</p>\n"
@@ -385,44 +450,43 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
         "  </div>\n"
         "</body>\n"
         "</html>\n",
-        setpoint,
-        temperatura_atual,
-        umidade_atual,
-        erro_temp,
-        duty_cycle_pwm,
-        pwm_led_percent,
-        rpm_display_web,
-        servo_angle,
-        temp_count,
-        temp_media
+        estado.setpoint_temperatura,
+        estado.temperatura_ambiente,
+        estado.umidade_ambiente,
+        erro_temperatura,
+        estado.ciclo_pwm,
+        percentual_pwm,
+        rpm_exibicao,
+        angulo_servo,
+        estado.contador_temperaturas,
+        media_temperaturas
     );
 
-    // cabeçalho HTTP
-    char header[128];
-    int header_len = snprintf(header, sizeof(header),
+    //Envia a resposta HTTP
+    char cabecalho[128];
+    int tamanho_cabecalho = snprintf(cabecalho, sizeof(cabecalho),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html\r\n"
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n",
-        body_len
+        tamanho_corpo
     );
 
-    tcp_write(tpcb, header, header_len, TCP_WRITE_FLAG_COPY);
-    tcp_write(tpcb, body,   body_len,   TCP_WRITE_FLAG_COPY);
+    tcp_write(tpcb, cabecalho, tamanho_cabecalho, TCP_WRITE_FLAG_COPY);
+    tcp_write(tpcb, corpo, tamanho_corpo, TCP_WRITE_FLAG_COPY);
     tcp_output(tpcb);
-    tcp_sent(tpcb, webserver_sent);
+    tcp_sent(tpcb, callback_envio_web);
     return ERR_OK;
 }
 
-static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
-    tcp_recv(newpcb, webserver_recv);
+static err_t callback_aceitar_conexao(void *arg, struct tcp_pcb *nova_conexao, err_t err) {
+    //Registra a função de recepção para novas conexões
+    tcp_recv(nova_conexao, callback_recepcao_web);
     return ERR_OK;
 }
 
-// ============================================================================
-// Task: Inicialização e loop do Wi-Fi + HTTP
-// ============================================================================
-void Task_Webserver(void *pv) {
+void task_servidor_web(void *parametros) {
+    //Inicializa o módulo Wi-Fi
     if (cyw43_arch_init()) {
         printf("Falha ao iniciar Wi-Fi\n");
         vTaskDelete(NULL);
@@ -430,9 +494,9 @@ void Task_Webserver(void *pv) {
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
     cyw43_arch_enable_sta_mode();
 
-    printf("Conectando a %s…\n", WIFI_SSID);
-    if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASSWORD,
-            CYW43_AUTH_WPA2_AES_PSK, 20000)) {
+    //Conecta à rede Wi-Fi
+    printf("Conectando a %s...\n", WIFI_NOME_REDE);
+    if (cyw43_arch_wifi_connect_timeout_ms(WIFI_NOME_REDE, WIFI_SENHA, CYW43_AUTH_WPA2_AES_PSK, 20000)) {
         printf("Falha na conexão\n");
         vTaskDelete(NULL);
     }
@@ -441,58 +505,41 @@ void Task_Webserver(void *pv) {
         printf("IP: %s\n", ipaddr_ntoa(&netif_default->ip_addr));
     }
 
-    struct tcp_pcb *srv = tcp_new();
-    if (!srv || tcp_bind(srv, IP_ADDR_ANY, 80) != ERR_OK) {
-        printf("Erro bind porta 80\n");
+    //Configura o servidor HTTP na porta 80
+    struct tcp_pcb *servidor = tcp_new();
+    if (!servidor || tcp_bind(servidor, IP_ADDR_ANY, 80) != ERR_OK) {
+        printf("Erro ao vincular porta 80\n");
         vTaskDelete(NULL);
     }
-    srv = tcp_listen(srv);
-    tcp_accept(srv, webserver_accept);
-    printf("HTTP on 80\n");
+    servidor = tcp_listen(servidor);
+    tcp_accept(servidor, callback_aceitar_conexao);
+    printf("Servidor HTTP iniciado na porta 80\n");
 
     while (true) {
-        cyw43_arch_poll();
-        vTaskDelay(pdMS_TO_TICKS(100));
+        cyw43_arch_poll(); //Processa eventos de rede
+        vTaskDelay(pdMS_TO_TICKS(100)); //Aguarda 100ms
     }
 }
 
-// ============================================================================
-// main()
-// ============================================================================
-int main() {
-    stdio_init_all();
-    inicializar_matriz_led();
+//=== FUNÇÃO PRINCIPAL ===
+int main(void) {
+    //Inicializa o hardware (serial, I2C, PWM, etc.)
+    inicializar_hardware();
 
-    sistema_ativo = false;
-    selecionando  = true;
-    temp_index = temp_count = 0;
+    //Cria as tasks do FreeRTOS
+    xTaskCreate(task_leitura_sensor, "LeituraSensor", 256, NULL, 3, NULL);
+    xTaskCreate(task_entrada_usuario, "EntradaUsuario", 512, NULL, 2, NULL);
+    xTaskCreate(task_controle_pi, "ControlePI", 512, NULL, 2, NULL);
+    xTaskCreate(task_atualizar_display, "AtualizarDisplay", 512, NULL, 1, NULL);
+    xTaskCreate(task_buzzer_alerta, "BuzzerAlerta", 256, NULL, 1, NULL);
+    xTaskCreate(task_servidor_web, "ServidorWeb", 1280, NULL, 1, NULL);
 
-    // I2C + OLED
-    i2c_init(OLED_I2C_PORT, 400000);
-    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_SDA);
-    gpio_pull_up(I2C_SCL);
-    ssd1306_init(&oled, 128, 64, false, OLED_ADDR, OLED_I2C_PORT);
-    ssd1306_config(&oled);
-
-    // PWM LED azul
-    gpio_set_function(PIN_RGB_B, GPIO_FUNC_PWM);
-    slice_b = pwm_gpio_to_slice_num(PIN_RGB_B);
-    chan_b  = pwm_gpio_to_channel(PIN_RGB_B);
-    pwm_set_wrap(slice_b, 65535);
-    pwm_set_chan_level(slice_b, chan_b, 0);
-    pwm_set_enabled(slice_b, true);
-
-    // Criação das tasks
-    xTaskCreate(Task_Sensor,    "Sensor",   256, NULL, 3, NULL);
-    xTaskCreate(Task_Input,     "Input",    512, NULL, 2, NULL);
-    xTaskCreate(Task_Control,   "Control",  512, NULL, 2, NULL);
-    xTaskCreate(Task_Display,   "Display",  512, NULL, 1, NULL);
-    xTaskCreate(Task_Buzzer,    "Buzzer",   256, NULL, 1, NULL);
-    xTaskCreate(Task_Webserver, "WebSrv",  1280, NULL, 1, NULL);
-
+    //Inicia o escalonador do FreeRTOS
     vTaskStartScheduler();
-    while (true) tight_loop_contents();
+
+    //Loop infinito (não deve chegar aqui)
+    while (true) {
+        tight_loop_contents();
+    }
     return 0;
 }
