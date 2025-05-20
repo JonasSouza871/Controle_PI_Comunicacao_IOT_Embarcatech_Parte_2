@@ -380,7 +380,7 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
         "    <p class=\"info\">Erro Atual: %.1f °C</p>\n"
         "    <p class=\"info\">PWM LED: %u / 65535 (%.1f %%)</p>\n"
         "    <p class=\"info\">RPM Simulado (300–2000): %.0f RPM</p>\n"
-        "    <p class=\"info\">Servo Simulado: %.1f°</p>\n"
+        "    <p class=\"info\">Servo Motor Simulado: %.1f°</p>\n"
         "    <p class=\"info\">Temp Média Últimos %d: %.1f °C</p>\n"
         "  </div>\n"
         "</body>\n"
