@@ -19,8 +19,8 @@
 #include "lwip/netif.h"
 
 // ----------------- CONFIGURAÇÃO WI-FI -----------------
-#define WIFI_SSID     "Nome_rede"
-#define WIFI_PASSWORD "Senha_rede"
+#define WIFI_SSID     "Jonas Souza"
+#define WIFI_PASSWORD "12345678"
 
 // ----------------- PINOS -----------------
 #define DHT11_PIN     16    // Sensor DHT11 (GPIO 16)
@@ -53,28 +53,27 @@ static uint slice_r, slice_g, slice_b;
 static uint chan_r, chan_g, chan_b;
 
 // ----------------- PROTÓTIPOS -----------------
-void Task_Sensor(void *pv);
-void Task_Input(void *pv);
-void Task_Control(void *pv);
-void Task_Buzzer(void *pv);
-void Task_Display(void *pv);
-void Task_Webserver(void *pv);
-static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
-static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err);
+void     Task_Sensor(void *pv);
+void     Task_Input(void *pv);
+void     Task_Control(void *pv);
+void     Task_Buzzer(void *pv);
+void     Task_Display(void *pv);
+void     Task_Webserver(void *pv);
 static err_t webserver_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len);
+static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err);
+static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
 
 // ============================================================================
 // Task: Leitura de temperatura via DHT11
 // ============================================================================
 void Task_Sensor(void *pv) {
-    // Inicializa pino do DHT11
     gpio_init(DHT11_PIN);
     while (true) {
         float h = 0.0f, t = 0.0f;
         if (dht11_read(DHT11_PIN, &h, &t) == 0) {
             temperatura_atual = t;
         }
-        vTaskDelay(pdMS_TO_TICKS(1000)); // 1s entre leituras
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -90,15 +89,15 @@ void Task_Input(void *pv) {
     gpio_pull_up(PIN_BTN_A);
 
     bool ultimo_estado_btn = false;
-    int ultima_direcao = 0;
+    int  ultima_direcao    = 0;
 
     while (true) {
-        uint16_t valor_raw = adc_read();
-        bool estado_btn_atual = (gpio_get(PIN_BTN_A) == 0);
-        int direcao = (valor_raw > 3000 ? 1 : (valor_raw < 1000 ? -1 : 0));
+        uint16_t valor_raw       = adc_read();
+        bool     estado_btn_atual = (gpio_get(PIN_BTN_A) == 0);
+        int      direcao         = (valor_raw > 3000 ? 1 : (valor_raw < 1000 ? -1 : 0));
 
         if (selecionando) {
-            if (direcao == 1 && ultima_direcao == 0 && setpoint < 30) setpoint++;
+            if (direcao ==  1 && ultima_direcao == 0 && setpoint < 30) setpoint++;
             if (direcao == -1 && ultima_direcao == 0 && setpoint > 10) setpoint--;
             if (estado_btn_atual && !ultimo_estado_btn) selecionando = false;
         } else {
@@ -106,7 +105,7 @@ void Task_Input(void *pv) {
         }
 
         ultimo_estado_btn = estado_btn_atual;
-        ultima_direcao = direcao;
+        ultima_direcao    = direcao;
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -117,14 +116,14 @@ void Task_Input(void *pv) {
 void Task_Control(void *pv) {
     const float kp = 120.0f;
     const float ki = 120.0f / 15.0f;
-    const float h = 1.0f;
+    const float h  = 1.0f;
     static float integral = 0.0f;
 
     while (true) {
         float erro = temperatura_atual - (float)setpoint;
-        float P = kp * erro;
-        integral += ki * erro * h;
-        integral = fmaxf(fminf(integral, 4096.0f), -4096.0f);
+        float P    = kp * erro;
+        integral  += ki * erro * h;
+        integral   = fmaxf(fminf(integral, 4096.0f), -4096.0f);
 
         float U = P + integral;
         int32_t duty = (int32_t)((U + 4096.0f) * (65535.0f / 8192.0f));
@@ -135,14 +134,10 @@ void Task_Control(void *pv) {
 
         float erro_abs = fabsf(erro);
         uint16_t r = 0, g = 0, b = 0;
-        if (selecionando) {
-            // RGB desligado em modo seleção
-        } else if (erro_abs > 9.6f) {
-            r = duty;
-        } else if (erro_abs >= 3.6f) {
-            r = duty; g = duty;
-        } else {
-            g = duty;
+        if (!selecionando) {
+            if (erro_abs > 9.6f)       r = duty;
+            else if (erro_abs >= 3.6f) r = duty, g = duty;
+            else                       g = duty;
         }
 
         pwm_set_chan_level(slice_r, chan_r, r);
@@ -159,7 +154,7 @@ void Task_Control(void *pv) {
 void Task_Buzzer(void *pv) {
     gpio_set_function(PIN_BUZZER, GPIO_FUNC_PWM);
     uint slice = pwm_gpio_to_slice_num(PIN_BUZZER);
-    uint chan = pwm_gpio_to_channel(PIN_BUZZER);
+    uint chan  = pwm_gpio_to_channel(PIN_BUZZER);
     pwm_set_enabled(slice, true);
 
     while (true) {
@@ -230,9 +225,9 @@ void Task_Display(void *pv) {
             ssd1306_draw_string(&oled, buf, 0, 48, false);
 
             float erro = fabsf(setpoint - temperatura_atual);
-            int parte_int = (int)floorf(erro);
+            int parte_int  = (int)floorf(erro);
             float parte_dec = erro - parte_int;
-            int digito = (parte_dec >= 0.6f) ? parte_int + 1 : parte_int;
+            int digito      = (parte_dec >= 0.6f) ? parte_int + 1 : parte_int;
             uint32_t cor;
             switch (digito) {
                 case 0: cor = COR_BRANCO;  break;
@@ -257,8 +252,8 @@ void Task_Display(void *pv) {
             snprintf(buf, sizeof(buf), "RPM: %4.0f", rpm_simulado);
             ssd1306_draw_string(&oled, buf, 0, 0, false);
             float range = RPM_MAX - RPM_MIN;
-            float pos = (rpm_simulado - RPM_MIN) / range;
-            int len = (int)(pos * oled.width);
+            float pos   = (rpm_simulado - RPM_MIN) / range;
+            int len     = (int)(pos * oled.width);
             for (int i = 0; i < len; i++) {
                 ssd1306_line(&oled, i, 20, i, 25, true);
             }
@@ -274,7 +269,7 @@ void Task_Display(void *pv) {
 }
 
 // ============================================================================
-// Webserver callbacks (sem alterações)
+// Webserver callbacks
 // ============================================================================
 static err_t webserver_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len) {
     tcp_close(tpcb);
@@ -286,33 +281,56 @@ static err_t webserver_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err
         tcp_close(tpcb);
         return ERR_OK;
     }
+
+    // Copia requisição em string
+    char *req = malloc(p->len + 1);
+    memcpy(req, p->payload, p->len);
+    req[p->len] = '\0';
     pbuf_free(p);
 
-    int brilho = (duty_cycle_pwm * 100) / 65535;
-    static char body[640];
-    int body_len = snprintf(body, sizeof(body),
-        "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
-        "<meta http-equiv=\"refresh\" content=\"2\">"
-        "<title>Monitor Pico W</title>"
-        "<style>body{font-family:sans-serif;padding:16px}"
-        "h1{font-size:28px}</style></head><body>"
-        "<h1>Dados do Sistema (att. 2 s)</h1>"
-        "<p>Temperatura atual: %.2f ℃</p>"
-        "<p>Setpoint: %d ℃</p>"
-        "<p>RPM simulado: %.0f (Min 300 Max 2000)</p>"
-        "<p>Brilho LED RGB: %d %%</p>"
-        "</body></html>",
-        temperatura_atual, setpoint, rpm_simulado, brilho);
+    // Ajusta setpoint conforme a URL
+    if      (strncmp(req, "GET /increase", 13) == 0 && setpoint < 30) setpoint++;
+    else if (strncmp(req, "GET /decrease", 13) == 0 && setpoint > 10) setpoint--;
+    free(req);
 
+    // Monta HTML com botões +1 e –1
+    static char body[1024];
+    int body_len = snprintf(body, sizeof(body),
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        "  <meta charset=\"UTF-8\">\n"
+        "  <title>Controle de Setpoint</title>\n"
+        "  <style>\n"
+        "    body { background-color: #b5e5fb; font-family: Arial, sans-serif;\n"
+        "           text-align: center; margin-top: 50px; }\n"
+        "    h1 { font-size: 48px; margin-bottom: 30px; }\n"
+        "    button { background-color: LightGray; font-size: 36px;\n"
+        "             margin: 10px; padding: 20px 40px; border-radius: 10px; }\n"
+        "    .info { font-size: 32px; margin-top: 30px; color: #333; }\n"
+        "  </style>\n"
+        "</head>\n"
+        "<body>\n"
+        "  <h1>Monitor Pico W</h1>\n"
+        "  <form action=\"/increase\"><button>+1 °C</button></form>\n"
+        "  <form action=\"/decrease\"><button>–1 °C</button></form>\n"
+        "  <p class=\"info\">Temperatura Atual: %.1f °C</p>\n"
+        "  <p class=\"info\">Setpoint: %d °C</p>\n"
+        "</body>\n"
+        "</html>\n",
+        temperatura_atual, setpoint);
+
+    // Cabeçalho HTTP
     char header[128];
     int header_len = snprintf(header, sizeof(header),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html\r\n"
         "Content-Length: %d\r\n"
-        "Connection: close\r\n\r\n", body_len);
+        "Connection: close\r\n\r\n",
+        body_len);
 
     tcp_write(tpcb, header, header_len, TCP_WRITE_FLAG_COPY);
-    tcp_write(tpcb, body, body_len, TCP_WRITE_FLAG_COPY);
+    tcp_write(tpcb, body,   body_len,   TCP_WRITE_FLAG_COPY);
     tcp_output(tpcb);
     tcp_sent(tpcb, webserver_sent);
     return ERR_OK;
@@ -323,6 +341,9 @@ static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err) {
     return ERR_OK;
 }
 
+// ============================================================================
+// Task: Servidor Web
+// ============================================================================
 void Task_Webserver(void *pv) {
     if (cyw43_arch_init()) {
         printf("Falha ao iniciar Wi-Fi\n");
@@ -338,8 +359,9 @@ void Task_Webserver(void *pv) {
         vTaskDelete(NULL);
     }
     printf("Conectado!\n");
-    if (netif_default)
+    if (netif_default) {
         printf("IP: %s\n", ipaddr_ntoa(&netif_default->ip_addr));
+    }
 
     struct tcp_pcb *srv = tcp_new();
     if (!srv || tcp_bind(srv, IP_ADDR_ANY, 80) != ERR_OK) {
@@ -363,7 +385,7 @@ int main() {
     stdio_init_all();
     inicializar_matriz_led();
 
-    // Inicializa I2C e OLED
+    // I2C e OLED
     i2c_init(OLED_I2C_PORT, 400000);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
@@ -372,7 +394,7 @@ int main() {
     ssd1306_init(&oled, 128, 64, false, OLED_ADDR, OLED_I2C_PORT);
     ssd1306_config(&oled);
 
-    // Inicializa PWM para LED RGB
+    // PWM RGB
     gpio_set_function(PIN_RGB_R, GPIO_FUNC_PWM);
     gpio_set_function(PIN_RGB_G, GPIO_FUNC_PWM);
     gpio_set_function(PIN_RGB_B, GPIO_FUNC_PWM);
@@ -386,12 +408,12 @@ int main() {
     pwm_set_enabled(slice_g, true);
     pwm_set_enabled(slice_b, true);
 
-    // Cria tasks do FreeRTOS
-    xTaskCreate(Task_Sensor,    "Sensor", 256, NULL, 3, NULL);
-    xTaskCreate(Task_Input,     "Input",  512, NULL, 2, NULL);
-    xTaskCreate(Task_Control,   "Control",512, NULL, 2, NULL);
-    xTaskCreate(Task_Display,   "Display",512, NULL, 1, NULL);
-    xTaskCreate(Task_Buzzer,    "Buzzer", 256, NULL, 1, NULL);
+    // Criação das Tasks
+    xTaskCreate(Task_Sensor,    "Sensor",  256, NULL, 3, NULL);
+    xTaskCreate(Task_Input,     "Input",   512, NULL, 2, NULL);
+    xTaskCreate(Task_Control,   "Control", 512, NULL, 2, NULL);
+    xTaskCreate(Task_Display,   "Display", 512, NULL, 1, NULL);
+    xTaskCreate(Task_Buzzer,    "Buzzer",  256, NULL, 1, NULL);
     xTaskCreate(Task_Webserver, "WebSrv", 1024, NULL, 1, NULL);
 
     vTaskStartScheduler();
