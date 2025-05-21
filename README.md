@@ -1,4 +1,4 @@
-# 🚀 PicoW-IoT-ThermoController – Sistema de Controle de Temperatura Inteligente com Interface Web
+# 🚀 ThermoGuard – Sistema de Controle de Temperatura Inteligente com Interface Web
 > *Um sistema completo para monitoramento e controle de temperatura utilizando Raspberry Pi Pico W, com display OLED, feedback tátil e sonoro, e uma interface web interativa.*
 
 ## 📝 Descrição Breve
