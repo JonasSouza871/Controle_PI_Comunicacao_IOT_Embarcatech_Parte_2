@@ -20,8 +20,8 @@
 
 //=== CONFIGURAÇÕES DO SISTEMA ===
 //Configurações de Wi-Fi
-#define WIFI_NOME_REDE "Jonas Souza"
-#define WIFI_SENHA     "12345678"
+#define WIFI_NOME_REDE "Nome_rede"
+#define WIFI_SENHA     "Senha_rede"
 
 //Pinos de hardware
 #define PINO_DHT11     16 //Pino do sensor DHT11 (temperatura e umidade)
