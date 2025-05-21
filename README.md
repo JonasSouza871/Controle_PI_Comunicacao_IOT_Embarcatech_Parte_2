@@ -161,26 +161,6 @@ Siga estes passos para compilar o projeto usando CMake e Make:
     *   Abra um navegador web no mesmo dispositivo da rede e digite o endereço IP do Pico W (e.g., `http://192.168.1.XX`).
     *   A interface web do ThermoController será carregada, permitindo monitoramento e controle.
 
-### 📁 Estrutura do Projeto
-
-Nome-do-Projeto/
-├── build/ # Diretório de compilação (gerado)
-├── lib/ # Bibliotecas de terceiros ou customizadas
-│ ├── Display_Bibliotecas/
-│ │ ├── ssd1306.c
-│ │ └── ssd1306.h
-│ ├── dht11/
-│ │ ├── dht11.c
-│ │ └── dht11.h
-│ └── Matriz_Bibliotecas/
-│ ├── matriz_led.c
-│ └── matriz_led.h
-├── main.c # Arquivo principal com a lógica da aplicação
-├── CMakeLists.txt # Script de configuração do CMake para o projeto
-├── pico_sdk_import.cmake # Script do CMake para importar o Pico SDK
-├── pico-sdk/ # Submódulo: Raspberry Pi Pico SDK (se incluído assim)
-└── README.md # Este arquivo
-
 *   **`main.c`**: Contém toda a lógica principal da aplicação, incluindo inicialização de hardware, definições de tasks do FreeRTOS (leitura de sensor, entrada de usuário, controle PI, atualização de display, buzzer, servidor web) e a função `main()`.
 *   **`lib/`**: Agrupa bibliotecas de hardware específicas.
     *   **`Display_Bibliotecas/`**: Código para controle do display OLED SSD1306.
